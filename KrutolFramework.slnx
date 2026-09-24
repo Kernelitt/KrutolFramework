@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="../KrutolTester/KrutolTester.csproj" />
+  <Project Path="KrutolFramework.csproj" />
+</Solution>

@@ -1,0 +1,12 @@
+{
+  "profiles": {
+    "KrutolFramework": {
+      "commandName": "Project"
+    },
+    "Профиль 1": {
+      "commandName": "Executable",
+      "executablePath": "C:\\Users\\user\\Desktop\\C# projects\\KrutolTester\\bin\\Debug\\net10.0\\KrutolTester.exe",
+      "workingDirectory": "C:\\Users\\user\\Desktop\\C# projects\\KrutolTester\\bin\\Debug\\net10.0"
+    }
+  }
+}
