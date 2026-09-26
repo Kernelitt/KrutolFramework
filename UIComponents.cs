@@ -2,7 +2,7 @@
 using OpenTK.Windowing.GraphicsLibraryFramework;
 
 namespace KrutolFramework.Core
-{ 
+{
     /// <summary>
     /// Базовый класс для всех будущих элементов интерфейса
     /// </summary>
@@ -11,14 +11,15 @@ namespace KrutolFramework.Core
         public Vector2 Position { get; set; }
         public Vector2 Size { get; set; }
         public bool IsVisible { get; set; } = true;
+        public bool IsEnabled { get; set; } = true; // Активен ли элемент для кликов
 
         /// <summary>
         /// Проверяет, находится ли курсор мыши в границах прямоугольника элемента.
-        /// Использует чистые координаты окна.
         /// </summary>
         public bool IsMouseOver()
         {
-            Vector2 mouse = Input.MousePosition;
+            if (!IsVisible || !IsEnabled) return false;
+            Vector2 mouse = Input.VirtualMousePosition;
             return mouse.X >= Position.X && mouse.X <= Position.X + Size.X &&
                    mouse.Y >= Position.Y && mouse.Y <= Position.Y + Size.Y;
         }
@@ -28,49 +29,248 @@ namespace KrutolFramework.Core
     }
 
     /// <summary>
-    /// Простая кнопка с геометрической проверкой клика
+    /// Невидимая кнопка для создания кликабельных зон поверх готовых артов фона
     /// </summary>
-    public class UIButton : UIComponent
+    public class UIInvisibleButton : UIComponent
     {
-        // Текстура кнопки из нашего атласа
-        public TextureRegion Texture { get; set; }
-
-        // Событие, которое выполнится при клике
         public Action OnClick { get; set; }
-
-        // Цвет, в который будет окрашиваться кнопка (например, для эффекта наведения)
-        protected Color4 CurrentColor { get; set; } = Color4.White;
+        private bool _isPressed = false;
 
         public override void Update(float deltaTime)
         {
-            if (!IsVisible) return;
+            if (!IsVisible || !IsEnabled) return;
 
-            // Если мышь над кнопкой — подсвечиваем её (например, делаем чуть темнее или светлее)
             if (IsMouseOver())
             {
-                CurrentColor = new Color4(0.8f, 0.8f, 0.8f, 1.0f); // Серый оттенок при наведении
-
-                // Используем наш рабочий триггер одиночного клика из класса Input
                 if (Input.IsMouseButtonPressed(MouseButton.Left))
                 {
+                    _isPressed = true;
+                }
+
+                // Клик засчитывается, когда мышку отпустили ИМЕННО над кнопкой (как в PvZ)
+                if (_isPressed && !Input.IsMouseButtonDown(MouseButton.Left))
+                {
+                    _isPressed = false;
                     OnClick?.Invoke();
                 }
             }
             else
             {
-                CurrentColor = Color4.White; // Обычный цвет, если мышь далеко
+                if (!Input.IsMouseButtonDown(MouseButton.Left))
+                {
+                    _isPressed = false;
+                }
             }
         }
 
         public override void Render(SpriteBatch batch)
         {
-            if (!IsVisible || Texture.AtlasTextureHandle == 0) return;
+            // Невидимая кнопка ничего не рисует
+        }
+    }
 
-            // Вычисляем масштаб спрайта, чтобы он растянулся ровно под физический размер кнопки
-            Vector2 scale = new(Size.X / Texture.Width, Size.Y / Texture.Height);
+    /// <summary>
+    /// Полноценная кнопка с поддержкой состояний (Замена текстур, Подсветка оверлеем и Нажатие)
+    /// </summary>
+    public class UIButton : UIComponent
+    {
+        // Основные текстурные состояния
+        public TextureRegion TextureIdle { get; set; }       // Обычное состояние
+        public TextureRegion TextureHover { get; set; }      // Состояние наведения (если null — используется замена цвета)
+        public TextureRegion TexturePressed { get; set; }    // Состояние нажатия (если null — сдвигаем idle)
+        public TextureRegion TextureDisabled { get; set; }   // Состояние выключенной кнопки
 
-            // Отрисовываем кнопку через наш высокопроизводительный SpriteBatch
-            batch.Draw(Texture, Position, scale, 0f, CurrentColor);
+        // Дополнительная текстура для наложения «блеска» или рамки поверх базовой текстуры
+        public TextureRegion TextureOverlay { get; set; }
+        public bool UseOverlayOnHover { get; set; } = false; // Использовать Overlay как подсветку вместо полной замены?
+
+        public Action OnClick { get; set; }
+
+        protected Color4 CurrentColor { get; set; } = Color4.White;
+        protected bool IsPressed { get; private set; } = false;
+
+        public override void Update(float deltaTime)
+        {
+            if (!IsVisible || !IsEnabled) return;
+
+            if (IsMouseOver())
+            {
+                // Эффект наведения цветом (только если не задана текстура Hover и не включен Overlay)
+                if (TextureHover.AtlasTextureHandle == 0 && !UseOverlayOnHover)
+                {
+                    CurrentColor = new Color4(0.9f, 0.9f, 0.9f, 1.0f); // Чуть притемняем для интерактивности
+                }
+                else
+                {
+                    CurrentColor = Color4.White;
+                }
+
+                if (Input.IsMouseButtonPressed(MouseButton.Left))
+                {
+                    IsPressed = true;
+                }
+
+                if (IsPressed && !Input.IsMouseButtonDown(MouseButton.Left))
+                {
+                    IsPressed = false;
+                    OnClick?.Invoke();
+                }
+            }
+            else
+            {
+                CurrentColor = Color4.White;
+                if (!Input.IsMouseButtonDown(MouseButton.Left))
+                {
+                    IsPressed = false;
+                }
+            }
+        }
+
+        public override void Render(SpriteBatch batch)
+        {
+            if (!IsVisible) return;
+
+            // 1. Выбираем текстуру на основе текущего состояния
+            TextureRegion activeTexture = TextureIdle;
+
+            if (!IsEnabled)
+            {
+                if (TextureDisabled.AtlasTextureHandle != 0) activeTexture = TextureDisabled;
+            }
+            else if (IsPressed && IsMouseOver())
+            {
+                if (TexturePressed.AtlasTextureHandle != 0) activeTexture = TexturePressed;
+            }
+            else if (IsMouseOver())
+            {
+                if (TextureHover.AtlasTextureHandle != 0 && !UseOverlayOnHover) activeTexture = TextureHover;
+            }
+
+            if (activeTexture.AtlasTextureHandle == 0) return;
+
+            // 2. Рассчитываем позицию и масштаб
+            Vector2 drawPos = Position;
+            Vector2 scale = new(Size.X / activeTexture.Width, Size.Y / activeTexture.Height);
+
+            // PopCap фишка: если текстура нажатия не задана, мы просто сдвигаем базовый спрайт на 1-2 пикселя вбок и вниз
+            if (IsPressed && IsMouseOver() && TexturePressed.AtlasTextureHandle == 0)
+            {
+                drawPos += new Vector2(1f, 1f);
+            }
+
+            // 3. Базовая отрисовка
+            batch.Draw(activeTexture, drawPos, scale, 0f, CurrentColor);
+
+            // 4. Отрисовка Оверлея (подсветка поверх)
+            if (IsEnabled && IsMouseOver() && UseOverlayOnHover && TextureOverlay.AtlasTextureHandle != 0)
+            {
+                Vector2 overlayScale = new(Size.X / TextureOverlay.Width, Size.Y / TextureOverlay.Height);
+                batch.Draw(TextureOverlay, drawPos, overlayScale, 0f, Color4.White, Anchor.Center);
+            }
+        }
+    }
+
+    public struct Button3PartSkin
+    {
+        public TextureRegion Left;
+        public TextureRegion Middle; // Растягиваемая/тайлируемая центральная часть
+        public TextureRegion Right;
+    }
+
+    /// <summary>
+    /// Кнопка, расширяемая только по горизонтали (3-Part Slicing).
+    /// Идеально для оригинальных кнопок меню, надписей "ОК", "ОТМЕНА" любой длины.
+    /// </summary>
+    public class UI3PartButton : UIComponent
+    {
+        public Button3PartSkin SkinIdle { get; set; }
+        public Button3PartSkin SkinHover { get; set; }
+        public Button3PartSkin SkinPressed { get; set; }
+
+        public Action OnClick { get; set; }
+
+        protected bool IsPressed = false;
+        protected Color4 CurrentColor = Color4.White;
+
+        public UI3PartButton(Button3PartSkin idleSkin, Vector2 position, float width)
+        {
+            SkinIdle = idleSkin;
+            Position = position;
+
+            // Высота кнопки жестко фиксируется по высоте исходного графического ассета краев
+            float height = idleSkin.Left.Height;
+            Size = new Vector2(width, height);
+        }
+
+        public override void Update(float deltaTime)
+        {
+            if (!IsVisible || !IsEnabled) return;
+
+            if (IsMouseOver())
+            {
+                if (SkinHover.Left.AtlasTextureHandle == 0)
+                {
+                    CurrentColor = new Color4(0.85f, 0.85f, 0.85f, 1.0f); // Подсветка тоном
+                }
+
+                if (Input.IsMouseButtonPressed(MouseButton.Left)) IsPressed = true;
+
+                if (IsPressed && !Input.IsMouseButtonDown(MouseButton.Left))
+                {
+                    IsPressed = false;
+                    OnClick?.Invoke();
+                }
+            }
+            else
+            {
+                CurrentColor = Color4.White;
+                if (!Input.IsMouseButtonDown(MouseButton.Left)) IsPressed = false;
+            }
+        }
+
+        public override void Render(SpriteBatch batch)
+        {
+            if (!IsVisible) return;
+
+            // 1. Выбираем активный скин
+            Button3PartSkin skin = SkinIdle;
+            if (IsPressed && IsMouseOver() && SkinPressed.Left.AtlasTextureHandle != 0) skin = SkinPressed;
+            else if (IsMouseOver() && SkinHover.Left.AtlasTextureHandle != 0) skin = SkinHover;
+
+            if (skin.Left.AtlasTextureHandle == 0 || skin.Middle.AtlasTextureHandle == 0 || skin.Right.AtlasTextureHandle == 0) return;
+
+            float x = Position.X;
+            float y = Position.Y;
+            float w = Size.X;
+
+            float lw = skin.Left.Width;
+            float rw = skin.Right.Width;
+            float mw = skin.Middle.Width > 0 ? skin.Middle.Width : 1f;
+
+            // Фиксация сдвига PopCap при нажатии без кастомного скина
+            if (IsPressed && IsMouseOver() && SkinPressed.Left.AtlasTextureHandle == 0)
+            {
+                x += 1f;
+                y += 1f;
+            }
+
+            // 2. Рисуем левый и правый неизменяемые края (Масштаб 1:1)
+            batch.Draw(skin.Left, new Vector2(x, y), Vector2.One, 0f, CurrentColor);
+            batch.Draw(skin.Right, new Vector2(x + w - rw, y), Vector2.One, 0f, CurrentColor);
+
+            // 3. Горизонтальный тайлинг (повторение) центральной части
+            for (float drawX = x + lw; drawX < x + w - rw; drawX += mw)
+            {
+                float remainW = (x + w - rw) - drawX;
+                float currentW = Math.Min(mw, remainW);
+                float scaleX = currentW / mw;
+
+                // Клонируем структуру UV, чтобы аккуратно обрезать текстуру на стыке правого края
+                TextureRegion midSegment = skin.Middle;
+                midSegment.U2 = midSegment.U1 + (midSegment.U2 - midSegment.U1) * scaleX; 
+                midSegment.Width = (int)currentW; 
+                batch.Draw(midSegment, new Vector2(drawX, y), new Vector2(scaleX, 1f), 0f, CurrentColor);
+            }
         }
     }
     /// <summary>
@@ -348,7 +548,7 @@ namespace KrutolFramework.Core
             }
             if (HeaderTexture.AtlasTextureHandle != 0)
             {
-                batch.Draw(HeaderTexture, new Vector2(x + cw * 2f, y), Vector2.One, 0f, Color4.White);
+                batch.Draw(HeaderTexture, new Vector2(x + cw * 2f, y), Vector2.One, 0f, Color4.White, Anchor.Center);
             }
         }
     }

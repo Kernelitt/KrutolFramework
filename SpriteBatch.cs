@@ -16,6 +16,13 @@ namespace KrutolFramework.Core
         public Color4 Color;         // Цвет/Альфа
     }
 
+    public enum Anchor
+    {
+        TopLeft,
+        Center,
+        BottomRight
+    }
+
         public class SpriteBatch : IDisposable
         {
         private const int MAX_SPRITES = 10000;
@@ -95,60 +102,94 @@ namespace KrutolFramework.Core
                 _currentTextureHandle = 0;
             }
 
-            public void Draw(TextureRegion region, Vector2 position, Vector2 scale, float rotationDegrees, Color4 color)
-            {
+        public void Draw(TextureRegion region, Vector2 position, Vector2 scale, float rotationDegrees, Color4 color, Anchor anchor = Anchor.TopLeft)
+        {
             // Если сменился хэндл объекта Texture2DArray или буфер заполнен — сбрасываем данные на GPU
-                if (_spriteCount >= MAX_SPRITES || (_currentTextureHandle != 0 && _currentTextureHandle != region.AtlasTextureHandle))
-                {
-                    Flush();
-                }
+            if (_spriteCount >= MAX_SPRITES || (_currentTextureHandle != 0 && _currentTextureHandle != region.AtlasTextureHandle))
+            {
+                Flush();
+            }
 
-                _currentTextureHandle = region.AtlasTextureHandle;
+            _currentTextureHandle = region.AtlasTextureHandle;
 
-                // Вычисляем локальные размеры с учетом масштаба
-                float w = region.Width * scale.X;
-                float h = region.Height * scale.Y;
+            // Вычисляем локальные размеры с учетом масштаба
+            float w = region.Width * scale.X;
+            float h = region.Height * scale.Y;
 
-                // Точка вращения (центр спрайта)
-                float originX = w * 0.5f;
-                float originY = h * 0.5f;
+            // Точка вращения (центр спрайта)
+            float originX = w * 0.5f;
+            float originY = h * 0.5f;
 
-                // Локальные координаты углов квада относительно центра
-                float x0 = -originX, y0 = -originY;
-                float x1 = w - originX, y1 = -originY;
-                float x2 = w - originX, y2 = h - originY;
-                float x3 = -originX, y3 = h - originY;
+            // Локальные координаты углов квада относительно центра
+            float x0 = -originX, y0 = -originY;
+            float x1 = w - originX, y1 = -originY;
+            float x2 = w - originX, y2 = h - originY;
+            float x3 = -originX, y3 = h - originY;
 
-                // Если есть поворот, трансформируем вершины на CPU (быстрее, чем куча матриц на GPU)
-                if (rotationDegrees != 0.0f)
-                {
-                    float radians = MathHelper.DegreesToRadians(rotationDegrees);
-                    float cos = MathF.Cos(radians);
-                    float sin = MathF.Sin(radians);
-
-                    // Функция поворота вектора
-                    void Rotate(ref float x, ref float y)
+            // Если есть поворот, трансформируем вершины на CPU (быстрее, чем куча матриц на GPU)
+            switch (anchor)
+            {
+                case Anchor.TopLeft:
+                    if (rotationDegrees != 0.0f)
                     {
-                        float rx = x * cos - y * sin;
-                        float ry = x * sin + y * cos;
-                    x = rx + position.X;
-                    y = ry + position.Y;
+                        float radians = MathHelper.DegreesToRadians(rotationDegrees);
+                        float cos = MathF.Cos(radians);
+                        float sin = MathF.Sin(radians);
+
+                        // Функция поворота вектора
+                        void Rotate(ref float x, ref float y)
+                        {
+                            float rx = x * cos - y * sin;
+                            float ry = x * sin + y * cos;
+                            x = rx + position.X;
+                            y = ry + position.Y;
+                        }
+
+                        Rotate(ref x0, ref y0);
+                        Rotate(ref x1, ref y1);
+                        Rotate(ref x2, ref y2);
+                        Rotate(ref x3, ref y3);
                     }
+                    else
+                    {
+                        x0 += position.X + originX; y0 += position.Y + originY;
+                        x1 += position.X + originX; y1 += position.Y + originY;
+                        x2 += position.X + originX; y2 += position.Y + originY;
+                        x3 += position.X + originX; y3 += position.Y + originY;
+                    }
+                    break;
+                case Anchor.Center:
+                    if (rotationDegrees != 0.0f)
+                    {
+                        float radians = MathHelper.DegreesToRadians(rotationDegrees);
+                        float cos = MathF.Cos(radians);
+                        float sin = MathF.Sin(radians);
 
-                    Rotate(ref x0, ref y0);
-                    Rotate(ref x1, ref y1);
-                    Rotate(ref x2, ref y2);
-                    Rotate(ref x3, ref y3);
-                }
-                else
-                {
-                x0 += position.X; y0 += position.Y;
-                x1 += position.X; y1 += position.Y;
-                x2 += position.X; y2 += position.Y;
-                x3 += position.X; y3 += position.Y;
-                }
+                        // Функция поворота вектора
+                        void Rotate(ref float x, ref float y)
+                        {
+                            float rx = x * cos - y * sin;
+                            float ry = x * sin + y * cos;
+                            x = rx + position.X;
+                            y = ry + position.Y;
+                        }
 
-                int index = _spriteCount * VERTICES_PER_SPRITE;
+                        Rotate(ref x0, ref y0);
+                        Rotate(ref x1, ref y1);
+                        Rotate(ref x2, ref y2);
+                        Rotate(ref x3, ref y3);
+                    }
+                    else
+                    {
+                        x0 += position.X; y0 += position.Y;
+                        x1 += position.X; y1 += position.Y;
+                        x2 += position.X; y2 += position.Y;
+                        x3 += position.X; y3 += position.Y;
+                    }
+                    break;
+            }
+
+            int index = _spriteCount * VERTICES_PER_SPRITE;
             float layer = region.Layer; // Сохраняем слой
 
             // Заполняем массив вершин, передавая индекс слоя во все 4 вершины спрайта

@@ -12,14 +12,6 @@ namespace KrutolFramework.Core
     {
         public static readonly Vector2i VirtualResolution = new(1600, 900);
 
-        // Смещения и размеры актуального вьюпорта (пригодятся для перевода координат мыши)
-        public static int ViewportX { get; private set; }
-        public static int ViewportY { get; private set; }
-        public static int ViewportWidth { get; private set; }
-        public static int ViewportHeight { get; private set; }
-        /// <summary>
-        /// Вызывается один раз при инициализации окна. Здесь настраивается OpenGL.
-        /// </summary>
         protected override void OnLoad()
         {
             base.OnLoad();
@@ -44,15 +36,6 @@ namespace KrutolFramework.Core
         protected override void OnUpdateFrame(FrameEventArgs args)
         {
             base.OnUpdateFrame(args);
-
-            // Пример обработки ввода: закрытие на Escape
-            if (KeyboardState.IsKeyDown(Keys.Escape))
-            {
-                Close();
-            }
-
-            // TODO: Обновление вашей игровой логики (Update managers, ЕCS, etc.)
-            // Передаем args.Time — время прошедшее с прошлого кадра (DeltaTime)
         }
 
         /// <summary>
@@ -64,11 +47,6 @@ namespace KrutolFramework.Core
 
             // Очищаем буферы цвета и глубины
             GL.Clear(ClearBufferMask.ColorBufferBit | ClearBufferMask.DepthBufferBit);
-
-            // TODO: Отрисовка вашей сцены (Render managers, SpriteBatch, etc.)
-
-            // Меняем буферы местами (Double Buffering)
-            SwapBuffers();
         }
 
 
@@ -86,7 +64,6 @@ namespace KrutolFramework.Core
         protected override void OnUnload()
         {
             // TODO: Освободить шейдеры, VBO, VAO, текстуры
-            Console.WriteLine("[Framework] Окно закрывается, ресурсы освобождены.");
 
             base.OnUnload();
         }

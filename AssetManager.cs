@@ -22,6 +22,7 @@ namespace KrutolFramework.Core
 
         private readonly Dictionary<string, FontRenderer> _fonts = new();
         private readonly Dictionary<string, ReanimDefinition> _animations = new();
+        private readonly Dictionary<string, ParticleSystemDefinition> _particles = new();
         private readonly HashSet<string> _registeredTextures = new();
 
         public AssetGroup(string name, int atlasSize = 2048, int layersPerPage = 2)
@@ -112,7 +113,7 @@ namespace KrutolFramework.Core
 
         // Добавьте этот метод внутрь класса AssetGroup в файле AssetManager.cs
         // Полностью замените метод LoadParticleSystem внутри AssetGroup (в файле AssetManager.cs)
-        public static ParticleSystemDefinition LoadParticleSystem(string sysName, string filePath)
+        public ParticleSystemDefinition LoadParticleSystem(string sysName, string filePath)
         {
             if (!File.Exists(filePath))
                 throw new FileNotFoundException($"Файл системы частиц не найден: {filePath}");
@@ -325,7 +326,7 @@ namespace KrutolFramework.Core
 
                 sysDef.Emitters.Add(eDef);
             }
-
+            _particles[sysName] = sysDef;
             return sysDef;
         }
 
@@ -333,6 +334,11 @@ namespace KrutolFramework.Core
         {
             if (_animations.TryGetValue(animName, out var anim)) return anim;
             throw new KeyNotFoundException($"Анимация '{animName}' не найдена в группе '{Name}'.");
+        }
+        public ParticleSystemDefinition GetParticle(string particleName)
+        {
+            if (_particles.TryGetValue(particleName, out var particle)) return particle;
+            throw new KeyNotFoundException($"Анимация '{particleName}' не найдена в группе '{Name}'.");
         }
 
         public FontRenderer GetFont(string fontName, int fontSize)
@@ -360,6 +366,7 @@ namespace KrutolFramework.Core
     {
         private static readonly Dictionary<string, AssetGroup> _groups = new();
         public static string RootPath { get; set; } = "";
+        public static AssetGroup Active;
         private static readonly DefLoadResPath[] _defLoadResPaths = new DefLoadResPath[]
         {
             new("IMAGE_REANIM_", "reanim\\"),
@@ -421,7 +428,6 @@ namespace KrutolFramework.Core
             {
                 // Приводим папку из конфигурации к нижнему регистру и убираем слеши для точного сравнения
                 string configDir = resPath.Directory.Replace('/', '\\').Trim('\\').ToLower();
-                Console.WriteLine(directoryName);
                 if (!string.IsNullOrEmpty(configDir) && directoryName == configDir)
                 {
                     prefix = resPath.Prefix;
@@ -439,7 +445,10 @@ namespace KrutolFramework.Core
             return finalResourceId;
         }
 
-
+        public static TextureRegion? GetTexture(string assetName) => Active?.Atlas.GetRegion($"{Active.Name}/{assetName}");
+        public static ParticleSystemDefinition? GetParticle(string particleName) => Active?.GetParticle(particleName);
+        public static ReanimDefinition? GetAnimation(string animName) => Active?.GetAnimation(animName);
+        public static FontRenderer? GetFont(string fontName, int fontSize) => Active?.GetFont(fontName, fontSize);
         public static void UnloadAll()
         {
             foreach (var group in _groups.Values) group.Dispose();

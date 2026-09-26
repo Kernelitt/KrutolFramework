@@ -534,9 +534,11 @@ namespace KrutolFramework.Core
             }
         }
 
-        public void Render(SpriteBatch batch, Vector2 systemPos)
+        public void Render(SpriteBatch batch, Vector2 systemPos, float systemScale)
         {
             if (_particles.Count == 0) return;
+
+            if (systemScale == null) systemScale = 1f;
 
             if (_def.Additive)
             {
@@ -549,7 +551,7 @@ namespace KrutolFramework.Core
                 float pProgress = Math.Clamp(p.Age / p.Duration, 0f, 1f);
                 float sysProgress = _systemDuration > 0f ? Math.Clamp(_systemAge / _systemDuration, 0f, 1f) : 0f;
 
-                float scale = _def.ParticleScale.Evaluate(pProgress, p.ScaleRandom);
+                float scale = _def.ParticleScale.Evaluate(pProgress, p.ScaleRandom) * systemScale;
                 float alpha = _def.ParticleAlpha.Evaluate(pProgress, p.AlphaRandom);
 
                 // 1. Базовые цвета частицы (из XML или дефолтные 1.0f)
@@ -641,7 +643,7 @@ namespace KrutolFramework.Core
                         // Масштаб по X остается стандартным, а по оси Y умножается на коэффициент Stretch
                         Vector2 pScale = new Vector2(scale, scale * stretch);
 
-                        batch.Draw(frameRegion, systemPos + _systemFieldOffset + p.Position, pScale, p.Rotation, pColor);
+                        batch.Draw(frameRegion, systemPos + _systemFieldOffset + p.Position * systemScale, pScale, p.Rotation, pColor);
                     }
                     catch { }
                 }
@@ -660,6 +662,7 @@ namespace KrutolFramework.Core
     {
         private readonly List<ParticleEmitter> _emitters = new();
         public Vector2 Position { get; set; } = Vector2.Zero;
+        public float Scale { get; set; } = 1f;
         public bool IsDead { get; private set; } = false;
 
         public TodParticleSystem(ParticleSystemDefinition def, AssetGroup group)
@@ -690,7 +693,7 @@ namespace KrutolFramework.Core
 
             foreach (var emitter in _emitters)
             {
-                emitter.Render(batch, Position);
+                emitter.Render(batch, Position, Scale);
             }
         }
     }

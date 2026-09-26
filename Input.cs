@@ -9,6 +9,7 @@ namespace KrutolFramework.Core
         private static MouseState _mouseState;
         private static KeyboardState _keyboardState;
 
+        private static GameWindow _window;
         // Переменные для отслеживания триггера клика (нажато именно в этом кадре)
         private static bool _prevLeftButton = false;
         private static bool _currLeftButton = false;
@@ -21,8 +22,37 @@ namespace KrutolFramework.Core
         /// <summary>
         /// Инициализация менеджера ввода. Вызывается один раз при старте игры.
         /// </summary>
+        public static readonly Vector2 VirtualResolution = new Vector2(1600f, 900f);
+        public static Vector2 VirtualMousePosition
+        {
+            get
+            {
+                if (_window == null) return Vector2.Zero;
+
+                // 1. Получаем чистые координаты мыши от GLFW (в пикселях окна)
+                float rawMouseX = _window.MouseState.X;
+                float rawMouseY = _window.MouseState.Y;
+
+                // 2. Получаем текущие физические размеры клиентской области окна
+                float windowWidth = _window.ClientSize.X;
+                float windowHeight = _window.ClientSize.Y;
+
+                if (windowWidth <= 0 || windowHeight <= 0) return Vector2.Zero;
+
+                // 3. Вычисляем коэффициенты масштабирования
+                float scaleX = VirtualResolution.X / windowWidth;
+                float scaleY = VirtualResolution.Y / windowHeight;
+
+                // 4. Транслируем координаты в игровое пространство
+                float virtualX = rawMouseX * scaleX;
+                float virtualY = rawMouseY * scaleY;
+
+                return new Vector2(virtualX, virtualY);
+            }
+        }
         public static void Initialize(GameWindow window)
         {
+            _window = window;
             _mouseState = window.MouseState;
             _keyboardState = window.KeyboardState;
         }

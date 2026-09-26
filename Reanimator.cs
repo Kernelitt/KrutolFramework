@@ -328,8 +328,8 @@ namespace KrutolFramework.Core
             m.M12 = -MathF.Sin(radSkewX) * scX;
             m.M21 = MathF.Sin(radSkewY) * scY;
             m.M22 = MathF.Cos(radSkewY) * scY;
-            m.M31 = tx + Position.X;
-            m.M32 = ty + Position.Y;
+            m.M31 = tx * Scale.X + Position.X ;
+            m.M32 = ty * Scale.Y + Position.Y ;
 
             m.M11 *= Scale.X; m.M12 *= Scale.Y;
             m.M21 *= Scale.X; m.M22 *= Scale.Y;
