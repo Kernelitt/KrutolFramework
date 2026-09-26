@@ -4,6 +4,7 @@ using System.IO;
 using OpenTK.Mathematics;
 using SixLabors.Fonts;
 using SixLabors.ImageSharp;
+using SixLabors.ImageSharp.Drawing.Processing;
 using SixLabors.ImageSharp.PixelFormats;
 using SixLabors.ImageSharp.Processing;
 using SixLabors.ImageSharp.Drawing;
@@ -33,6 +34,7 @@ namespace KrutolFramework.Core
         {
             Font font;
 
+            // 1. Загрузка шрифта
             if (File.Exists(fontNameOrPath))
             {
                 var collection = new FontCollection();
@@ -48,20 +50,25 @@ namespace KrutolFramework.Core
                 else
                 {
                     font = SystemFonts.CreateFont(SystemFonts.Collection.Families.GetEnumerator().Current.Name, fontSize);
+                    Console.WriteLine($"[Font] Шрифт '{fontNameOrPath}' не найден. Используется системный по умолчанию.");
                 }
             }
 
+            // Извлечение межстрочного интервала из метрик
             var fontMetrics = font.FontMetrics;
             // Рассчитываем точный коэффициент масштабирования из EM в пиксели
             float scaleFactor = (float)fontSize / fontMetrics.UnitsPerEm;
             LineSpacing = fontMetrics.HorizontalMetrics.LineHeight * scaleFactor;
 
             string charSet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.,!?-+=()_/\\:;@#абвгдеёжзийклмнопрстуфхцчшщъыьэюяАБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯ ";
+
             var textOptions = new TextOptions(font);
 
             foreach (char c in charSet)
             {
                 string charStr = c.ToString();
+
+                // Измеряем границы символа (возвращает FontRectangle)
                 FontRectangle textMetrics = TextMeasurer.MeasureBounds(charStr, textOptions);
 
                 // Создаем текстурный квадрат с запасом под глиф
@@ -87,12 +94,14 @@ namespace KrutolFramework.Core
 
                 using (var img = new Image<Rgba32>(paddedWidth, paddedHeight))
                 {
+                    // Настраиваем опции рендеринга текста на текстуру
                     var renderOptions = new RichTextOptions(font)
                     {
                         // Рисуем символ точно от его локального левого верхнего угла в коробке
                         Origin = new PointF(-textMetrics.Left, -textMetrics.Top)
                     };
 
+                    // В ImageSharp 3.x отрисовка текста происходит СТРОГО через ctx.Paint и canvas
                     img.Mutate(ctx => ctx.Paint(canvas =>
                     {
                         canvas.DrawText(renderOptions, charStr, Brushes.Solid(Color.White), pen: null);
@@ -100,6 +109,7 @@ namespace KrutolFramework.Core
 
                     img.CopyPixelDataTo(pixelData);
                 }
+
 
                 string glyphKey = $"font_{fontNameOrPath}_{fontSize}_{c}";
                 TextureRegion region = atlas.RegisterRawPixels(glyphKey, paddedWidth, paddedHeight, pixelData);

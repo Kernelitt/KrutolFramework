@@ -2,7 +2,8 @@
 using OpenTK.Mathematics;
 
 namespace KrutolFramework.DataTypes
-{ 
+{
+
     [StructLayout(LayoutKind.Sequential, Pack = 1)]
     public struct Vertex2D
     {
@@ -10,8 +11,5 @@ namespace KrutolFramework.DataTypes
         public Vector2 TexCoords;
         public float TextureLayer; // <--- Добавить это поле
         public Color4 Color;
-        
-
     }
-
 }
