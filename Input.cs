@@ -46,9 +46,9 @@ namespace KrutolFramework.Core
         /// Проверка: удерживается ли левая кнопка мыши прямо сейчас.
         /// </summary>
         public static bool IsMouseButtonDown(MouseButton button)
-        {
+            {
             return _mouseState?.IsButtonDown(button) ?? false;
-        }
+            }
 
         /// <summary>
         /// Проверка: была ли левая кнопка мыши НАЖАТА именно в текущем кадре.

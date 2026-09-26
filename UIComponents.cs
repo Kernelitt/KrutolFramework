@@ -2,7 +2,7 @@
 using OpenTK.Windowing.GraphicsLibraryFramework;
 
 namespace KrutolFramework.Core
-{
+{ 
     /// <summary>
     /// Базовый класс для всех будущих элементов интерфейса
     /// </summary>
@@ -190,7 +190,7 @@ namespace KrutolFramework.Core
     }
 
     public struct DialogWindowSkin
-    {
+        {
         public TextureRegion TopLeft;
         public TextureRegion TopMiddle;   // Верхняя рамка тела
         public TextureRegion TopRight;
@@ -321,7 +321,7 @@ namespace KrutolFramework.Core
                 TextureRegion repeatRight = Skin.CenterRight;
                 repeatRight.V2 = repeatRight.V1 + (repeatRight.V2 - repeatRight.V1) * scaleY;
                 batch.Draw(repeatRight, new Vector2(x + w - cw, drawY), new Vector2(1f, scaleY), 0f, Color4.White);
-            }
+        }
 
             // === 4. ТАЙЛИНГ ЦЕНТРА ===
             float cmW = Skin.CenterMiddle.Width > 0 ? Skin.CenterMiddle.Width : 1f;
