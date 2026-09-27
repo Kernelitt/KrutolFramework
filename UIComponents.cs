@@ -256,7 +256,7 @@ namespace KrutolFramework.Core
 
             // 2. Рисуем левый и правый неизменяемые края (Масштаб 1:1)
             batch.Draw(skin.Left, new Vector2(x, y), Vector2.One, 0f, CurrentColor);
-            batch.Draw(skin.Right, new Vector2(x + w - rw, y), Vector2.One, 0f, CurrentColor);
+            batch.Draw(skin.Right, new Vector2(x + w - rw - 10, y), Vector2.One, 0f, CurrentColor);
 
             // 3. Горизонтальный тайлинг (повторение) центральной части
             for (float drawX = x + lw; drawX < x + w - rw; drawX += mw)
@@ -439,8 +439,8 @@ namespace KrutolFramework.Core
             // КРИТИЧЕСКИЙ РАСЧЕТ: Проверяем наведение строго на физические границы нерастянутого хедера.
             // Хедер центрирован по верхней кромке окна или прижат к левому краю? 
             // Сделаем классический вариант: хедер прижат к левому верхнему углу окна.
-            bool isOverHeader = mouse.X >= Position.X + CornerWidth * 2 && mouse.X <= Position.X + CornerWidth * 2 + HeaderWidth &&
-                               mouse.Y >= Position.Y - 15 && mouse.Y <= Position.Y + HeaderHeight - 15;
+            bool isOverHeader = mouse.X >= Position.X + Size.X/2 && mouse.X <= Position.X + Size.X / 2 + HeaderWidth &&
+                               mouse.Y >= Position.Y && mouse.Y <= Position.Y + HeaderHeight;
 
             if (isOverHeader && Input.IsMouseButtonPressed(MouseButton.Left) && !_isDragging)
             {
@@ -548,7 +548,7 @@ namespace KrutolFramework.Core
             }
             if (HeaderTexture.AtlasTextureHandle != 0)
             {
-                batch.Draw(HeaderTexture, new Vector2(x + cw * 2f, y), Vector2.One, 0f, Color4.White, Anchor.Center);
+                batch.Draw(HeaderTexture, new Vector2(x + w / 2f, y + HeaderHeight - 10f), Vector2.One, 0f, Color4.White, Anchor.Center);
             }
         }
     }

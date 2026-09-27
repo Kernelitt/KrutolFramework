@@ -2,8 +2,6 @@
 
 namespace KrutolFramework.Core
 {
-
-
     public class Camera2D
     {
         public Vector2 Position { get; set; } = Vector2.Zero;

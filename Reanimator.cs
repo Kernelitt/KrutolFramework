@@ -54,7 +54,7 @@ namespace KrutolFramework.Core
         private readonly TrackInstance[] _trackInstances;
         private readonly string _groupName;
 
-        private float _animTime = 0f; // от 0.0 до 1.0 внутри активного диапазона
+        public float _animTime = 0f; // от 0.0 до 1.0 внутри активного диапазона
         private float _animRate = 12f;
 
         // ИСПРАВЛЕНО: Индексы теперь динамические и могут настраиваться пользователем
@@ -389,19 +389,20 @@ namespace KrutolFramework.Core
                         var transformsList = new List<ReanimTransform>();
                         foreach (XmlNode tNode in transformNodes)
                         {
-                            var t = new ReanimTransform();
+                            var t = new ReanimTransform
+                            {
+                                TransX = ReadFloatChild(tNode, "x"),
+                                TransY = ReadFloatChild(tNode, "y"),
+                                ScaleX = ReadFloatChild(tNode, "sx"),
+                                ScaleY = ReadFloatChild(tNode, "sy"),
+                                SkewX = ReadFloatChild(tNode, "kx"),
+                                SkewY = ReadFloatChild(tNode, "ky"),
+                                Frame = ReadFloatChild(tNode, "f"),
 
-                            t.TransX = ReadFloatChild(tNode, "x");
-                            t.TransY = ReadFloatChild(tNode, "y");
-                            t.ScaleX = ReadFloatChild(tNode, "sx");
-                            t.ScaleY = ReadFloatChild(tNode, "sy");
-                            t.SkewX = ReadFloatChild(tNode, "kx");
-                            t.SkewY = ReadFloatChild(tNode, "ky");
-                            t.Frame = ReadFloatChild(tNode, "f");
-
-                            // Добавлена безопасность .Trim() на случай лишних пробелов в XML
-                            t.ImageName = tNode.SelectSingleNode("i")?.InnerText?.Trim() ?? "";
-                            t.Text = tNode.SelectSingleNode("text")?.InnerText?.Trim() ?? "";
+                                // Добавлена безопасность .Trim() на случай лишних пробелов в XML
+                                ImageName = tNode.SelectSingleNode("i")?.InnerText?.Trim() ?? "",
+                                Text = tNode.SelectSingleNode("text")?.InnerText?.Trim() ?? ""
+                            };
 
                             transformsList.Add(t);
                         }
