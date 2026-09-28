@@ -2,7 +2,7 @@
 using System.Collections.Generic;
 using System.Diagnostics;
 
-namespace KrutolFramework
+namespace KrutolFramework.Core
 {
     public static class Profiler
     {
@@ -43,7 +43,6 @@ namespace KrutolFramework
 
         public static void PrintResults()
         {
-            Console.Clear();
             Console.WriteLine("=== FRAME PERFORMANCE PROFILER ===");
             foreach (var kvp in _results)
             {

@@ -92,6 +92,14 @@ namespace KrutolFramework.Core
             }
 
             track.Nodes.Sort((a, b) => a.Time.CompareTo(b.Time));
+
+            // ФИКС: Если распарсилась одиночная константа, 
+            // дублируем её на конец таймлайна, чтобы Evaluate работал стабильно во всех узлах эмиттера
+            if (track.Nodes.Count == 1)
+            {
+                track.Prepare();
+            }
+
             return track;
         }
 
@@ -352,15 +360,14 @@ namespace KrutolFramework.Core
             int spawnCount = (int)_spawnAccum;
             _spawnAccum -= spawnCount;
 
-            // Если SpawnRate не задан, но работает SpawnMinActive (как в Award.xml)
-            if (spawnCount == 0 && _particles.Count < (int)_def.SpawnMinActive.Evaluate(progress, rand.NextSingle()))
+            int minActive = _def.SpawnMinActive.Nodes.Count > 0 ? (int)_def.SpawnMinActive.Evaluate(progress, rand.NextSingle()) : 0;
+            if (spawnCount == 0 && _particles.Count < minActive && _totalLaunched < minActive)
             {
                 spawnCount = 1;
             }
 
             if (!_isDead)
             {
-                int minActive = (int)_def.SpawnMinActive.Evaluate(progress, rand.NextSingle());
                 int maxLaunched = _def.SpawnMaxLaunched.Nodes.Count > 0 ? (int)_def.SpawnMaxLaunched.Evaluate(progress, rand.NextSingle()) : int.MaxValue;
 
                 for (int index = 0; index < spawnCount; index++)
@@ -438,7 +445,9 @@ namespace KrutolFramework.Core
                         Position = new Vector2(finalPosX, finalPosY),
                         Velocity = new Vector2(MathF.Sin(launchAngle) * launchSpeed, MathF.Cos(launchAngle) * launchSpeed),
                         Age = 0f,
-                        Duration = MathF.Max(1f, _def.ParticleDuration.Evaluate(progress, rand.NextSingle())),
+                        Duration = _def.ParticleDuration.Nodes.Count > 0
+                            ? MathF.Max(1f, _def.ParticleDuration.Evaluate(progress, rand.NextSingle()))
+                            : _systemDuration, // Если не задано, живет столько же, сколько сам эмиттер
                         ScaleRandom = rand.NextSingle(),
                         AlphaRandom = rand.NextSingle(),
                         ColorRandom = rand.NextSingle(),
@@ -479,18 +488,22 @@ namespace KrutolFramework.Core
                     }
                     else if (field.FieldType.Equals("GroundConstraint", StringComparison.OrdinalIgnoreCase))
                     {
+                        // В оригинале PopCap координата земли Y — это ЛОКАЛЬНОЕ смещение вниз от центра системы частиц
                         float groundY = field.Y.Evaluate(pProgress, p.ColorRandom);
-                        // Если частица упала ниже уровня земли (относительно центра системы частиц)
+
                         if (p.Position.Y > groundY)
                         {
-                            p.Position.Y = groundY; // Удерживаем на земле
+                            p.Position.Y = groundY;
 
                             float reflect = _def.CollisionReflect.Evaluate(pProgress, rand.NextSingle());
+                            // Защита от зависания: если рефлект не задан в XML, ставим дефолтный 0.5f
+                            if (_def.CollisionReflect.Nodes.Count == 0) reflect = 0.5f;
+
                             float spin = _def.CollisionSpin.Evaluate(pProgress, rand.NextSingle()) * 0.001f;
 
-                            p.SpinVelocity = p.Velocity.Y * spin * 60f; // Передаем инерцию вращению
+                            p.SpinVelocity = p.Velocity.Y * spin * 60f;
                             p.Velocity.X *= reflect;
-                            p.Velocity.Y *= -reflect; // Меняем вектор скорости по вертикали (отскок)
+                            p.Velocity.Y *= -reflect; // Отскок вверх!
                         }
                     }
                 }
@@ -538,8 +551,6 @@ namespace KrutolFramework.Core
         {
             if (_particles.Count == 0) return;
 
-            if (systemScale == null) systemScale = 1f;
-
             if (_def.Additive)
             {
                 // Возвращаем оригинальный блендинг PopCap PvZ
@@ -583,14 +594,14 @@ namespace KrutolFramework.Core
                 b = Math.Clamp(b, 0f, 1f);
                 alpha = Math.Clamp(alpha, 0f, 1f);
 
-                Color4 pColor = new Color4(r, g, b, alpha);
+                Color4 pColor = new(r, g, b, alpha);
 
                 if (_def.FullScreen)
                 {
                     try
                     {
                         TextureRegion region = _group.Atlas.GetRegion($"{_group.Name}/{_def.ImageName}");
-                        Vector2 fillScale = new Vector2(FrameworkGameWindow.VirtualResolution.X / region.Width,
+                        Vector2 fillScale = new(FrameworkGameWindow.VirtualResolution.X / region.Width,
                                                         FrameworkGameWindow.VirtualResolution.Y / region.Height);
                         batch.Draw(region, Vector2.Zero, fillScale, 0f, pColor);
                     }
@@ -608,11 +619,21 @@ namespace KrutolFramework.Core
                         float fullUWidth = region.U2 - region.U1;
                         float frameUWidth = fullUWidth / _def.ImageFrames;
 
-                        TextureRegion frameRegion = region;
-                        frameRegion.Width = celWidth;
-
-                        // Учитываем выбранный кадр + точечное смещение ImageCol
                         int finalFrameIndex = p.SelectedFrame + _def.ImageCol;
+
+                        // Фикс: явно инициализируем изолированный регион для батчера
+                        TextureRegion frameRegion = new TextureRegion
+                        {
+                            AtlasTextureHandle = region.AtlasTextureHandle,
+                            Layer = region.Layer,
+                            Width = celWidth,
+                            Height = celHeight,
+                            U1 = region.U1 + (finalFrameIndex * frameUWidth),
+                            U2 = region.U1 + ((finalFrameIndex + 1) * frameUWidth),
+                            V1 = region.V1,
+                            V2 = region.V2
+                        };
+
                         frameRegion.U1 = region.U1 + (finalFrameIndex * frameUWidth);
                         frameRegion.U2 = frameRegion.U1 + frameUWidth;
 
@@ -643,7 +664,7 @@ namespace KrutolFramework.Core
                         // Масштаб по X остается стандартным, а по оси Y умножается на коэффициент Stretch
                         Vector2 pScale = new Vector2(scale, scale * stretch);
 
-                        batch.Draw(frameRegion, systemPos + _systemFieldOffset + p.Position * systemScale, pScale, p.Rotation, pColor);
+                        batch.Draw(frameRegion, systemPos + _systemFieldOffset + p.Position * systemScale, pScale, p.Rotation, pColor, Anchor.Center);
                     }
                     catch { }
                 }

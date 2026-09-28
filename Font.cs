@@ -1,20 +1,20 @@
-﻿using System;
+﻿using OpenTK.Mathematics;
+using SixLabors.Fonts;
+using SixLabors.ImageSharp.Drawing.Processing;
+using SixLabors.ImageSharp.Processing;
+using System;
 using System.Collections.Generic;
 using System.IO;
-using OpenTK.Mathematics;
-using SixLabors.Fonts;
-using SixLabors.ImageSharp;
-using SixLabors.ImageSharp.Drawing.Processing;
-using SixLabors.ImageSharp.PixelFormats;
-using SixLabors.ImageSharp.Processing;
-using SixLabors.ImageSharp.Drawing;
-using SixLabors.ImageSharp.Drawing.Processing;
-
-using Font = SixLabors.Fonts.Font;
-using Color = SixLabors.ImageSharp.Color;
 
 namespace KrutolFramework.Core
 {
+    public enum TextAlignment
+    {
+        Left,
+        Center,
+        Right
+    }
+
     public class FontGlyph
     {
         public TextureRegion Region;
@@ -33,8 +33,6 @@ namespace KrutolFramework.Core
         public FontRenderer(DynamicTextureAtlas atlas, string fontNameOrPath, int fontSize)
         {
             Font font;
-
-            // 1. Загрузка шрифта
             if (File.Exists(fontNameOrPath))
             {
                 var collection = new FontCollection();
@@ -54,30 +52,23 @@ namespace KrutolFramework.Core
                 }
             }
 
-            // Извлечение межстрочного интервала из метрик
             var fontMetrics = font.FontMetrics;
-            // Рассчитываем точный коэффициент масштабирования из EM в пиксели
             float scaleFactor = (float)fontSize / fontMetrics.UnitsPerEm;
             LineSpacing = fontMetrics.HorizontalMetrics.LineHeight * scaleFactor;
 
             string charSet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.,!?-+=()_/\\:;@#абвгдеёжзийклмнопрстуфхцчшщъыьэюяАБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯ ";
-
             var textOptions = new TextOptions(font);
 
             foreach (char c in charSet)
             {
                 string charStr = c.ToString();
-
-                // Измеряем границы символа (возвращает FontRectangle)
                 FontRectangle textMetrics = TextMeasurer.MeasureBounds(charStr, textOptions);
 
-                // Создаем текстурный квадрат с запасом под глиф
                 int paddedWidth = (int)Math.Ceiling(textMetrics.Width) + 4;
                 int paddedHeight = (int)Math.Ceiling(textMetrics.Height) + 4;
 
                 if (paddedWidth <= 4 || paddedHeight <= 4)
                 {
-                    // Для пробела и невидимых символов
                     _glyphs[c] = new FontGlyph
                     {
                         Region = new TextureRegion { Width = 0, Height = 0 },
@@ -91,25 +82,20 @@ namespace KrutolFramework.Core
                 }
 
                 byte[] pixelData = new byte[paddedWidth * paddedHeight * 4];
-
-                using (var img = new Image<Rgba32>(paddedWidth, paddedHeight))
+                using (var img = new SixLabors.ImageSharp.Image<SixLabors.ImageSharp.PixelFormats.Rgba32>(paddedWidth, paddedHeight))
                 {
-                    // Настраиваем опции рендеринга текста на текстуру
                     var renderOptions = new RichTextOptions(font)
                     {
-                        // Рисуем символ точно от его локального левого верхнего угла в коробке
-                        Origin = new PointF(-textMetrics.Left, -textMetrics.Top)
+                        Origin = new System.Numerics.Vector2(-textMetrics.Left, -textMetrics.Top)
                     };
 
-                    // В ImageSharp 3.x отрисовка текста происходит СТРОГО через ctx.Paint и canvas
                     img.Mutate(ctx => ctx.Paint(canvas =>
                     {
-                        canvas.DrawText(renderOptions, charStr, Brushes.Solid(Color.White), pen: null);
+                        canvas.DrawText(renderOptions, charStr, SixLabors.ImageSharp.Drawing.Processing.Brushes.Solid(SixLabors.ImageSharp.Color.White), pen: null);
                     }));
 
                     img.CopyPixelDataTo(pixelData);
                 }
-
 
                 string glyphKey = $"font_{fontNameOrPath}_{fontSize}_{c}";
                 TextureRegion region = atlas.RegisterRawPixels(glyphKey, paddedWidth, paddedHeight, pixelData);
@@ -126,36 +112,78 @@ namespace KrutolFramework.Core
             }
         }
 
-        public void DrawText(SpriteBatch batch, string text, Vector2 position, Vector2 scale, Color4 color)
+        /// <summary>
+        /// Вычисляет размеры переданной строки (длину самой широкой подстроки и общую высоту)
+        /// </summary>
+        public Vector2 MeasureString(string text, Vector2 scale)
         {
-            Vector2 currentPos = position;
+            if (string.IsNullOrEmpty(text)) return Vector2.Zero;
+
+            float maxWidth = 0f;
+            float currentWidth = 0f;
+            int linesCount = 1;
 
             foreach (char c in text)
             {
                 if (c == '\n')
                 {
-                    currentPos.X = position.X;
-                    currentPos.Y += LineSpacing * scale.Y;
+                    if (currentWidth > maxWidth) maxWidth = currentWidth;
+                    currentWidth = 0f;
+                    linesCount++;
                     continue;
                 }
 
                 if (_glyphs.TryGetValue(c, out var glyph))
                 {
-                    if (glyph.Region.Width > 0 && glyph.Region.Height > 0)
-                    {
-                        // Исправлено: Смещение Bearing накладывается с учетом знака метрик
-                        Vector2 offsetPos = new(
-                            currentPos.X + (glyph.BearingX * scale.X),
-                            currentPos.Y + (glyph.BearingY * scale.Y)
-                        );
-
-                        // Отрисовываем символ из атласа
-                        batch.Draw(glyph.Region, offsetPos, scale, 0f, color);
-                    }
-
-                    // Сдвигаем каретку строго на ширину буквы (Advance)
-                    currentPos.X += (glyph.HorizontalAdvance + 1f) * scale.X;
+                    currentWidth += (glyph.HorizontalAdvance + 1f) * scale.X;
                 }
+            }
+            if (currentWidth > maxWidth) maxWidth = currentWidth;
+
+            return new Vector2(maxWidth, linesCount * LineSpacing * scale.Y);
+        }
+
+        public void DrawText(SpriteBatch batch, string text, Vector2 position, Vector2 scale, Color4 color, TextAlignment alignment = TextAlignment.Left)
+        {
+            if (string.IsNullOrEmpty(text)) return;
+
+            string[] lines = text.Split('\n');
+            float currentY = position.Y;
+
+            foreach (var line in lines)
+            {
+                Vector2 lineSize = MeasureString(line, scale);
+                float startX = position.X;
+
+                // Смещение стартовой позиции каретки X в зависимости от типа выравнивания
+                if (alignment == TextAlignment.Center)
+                {
+                    startX -= lineSize.X * 0.5f;
+                }
+                else if (alignment == TextAlignment.Right)
+                {
+                    startX -= lineSize.X;
+                }
+
+                float currentX = startX;
+
+                foreach (char c in line)
+                {
+                    if (_glyphs.TryGetValue(c, out var glyph))
+                    {
+                        if (glyph.Region.Width > 0 && glyph.Region.Height > 0)
+                        {
+                            Vector2 offsetPos = new(
+                                currentX + (glyph.BearingX * scale.X),
+                                currentY + (glyph.BearingY * scale.Y)
+                            );
+                            batch.Draw(glyph.Region, offsetPos, scale, 0f, color);
+                        }
+                        currentX += (glyph.HorizontalAdvance + 1f) * scale.X;
+                    }
+                }
+
+                currentY += LineSpacing * scale.Y;
             }
         }
     }

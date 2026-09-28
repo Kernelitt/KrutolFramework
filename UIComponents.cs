@@ -273,6 +273,90 @@ namespace KrutolFramework.Core
             }
         }
     }
+
+    public class UITextInput : UIComponent
+    {
+        public string Text { get; set; } = "";
+        public int MaxLength { get; set; } = 15;
+        public bool IsFocused { get; set; } = false;
+
+        public FontRenderer Font { get; set; }
+        public TextureRegion BackgroundTexture { get; set; } // Текстура поля ввода (если есть)
+
+        private float _blinkTimer = 0f;
+        private bool _caretVisible = true;
+
+        public override void Update(float deltaTime)
+        {
+            if (!IsVisible || !IsEnabled) return;
+
+            // Клик для фокуса
+            if (Input.IsMouseButtonPressed(MouseButton.Left))
+            {
+                IsFocused = IsMouseOver();
+            }
+
+            if (!IsFocused) return;
+
+            // Мигание каретки
+            _blinkTimer += deltaTime;
+            if (_blinkTimer >= 0.5f)
+            {
+                _caretVisible = !_caretVisible;
+                _blinkTimer = 0f;
+            }
+
+            // Классический Backspace
+            if (Input.IsKeyDown(Keys.Backspace) && Text.Length > 0)
+            {
+                Text = Text.Substring(0, Text.Length - 1);
+            }
+
+            List<char> pressedChars = Input.GetFrameTextInput();
+            if (pressedChars.Count > 0)
+            {
+                foreach (char c in pressedChars)
+                {
+                    if (Text.Length < MaxLength)
+                    {
+                        Text += c;
+                    }
+                }
+                _blinkTimer = 0f;
+                _caretVisible = true;
+            }
+
+        }
+
+        public override void Render(SpriteBatch batch)
+        {
+            if (!IsVisible) return;
+
+            // 1. Отрисовка подложки/рамки
+            if (BackgroundTexture.AtlasTextureHandle != 0)
+            {
+                Vector2 scale = new(Size.X / BackgroundTexture.Width, Size.Y / BackgroundTexture.Height);
+                batch.Draw(BackgroundTexture, Position, scale, 0f, Color4.White);
+            }
+
+            if (Font == null) return;
+
+            // 2. Отрисовка текста внутри поля ввода (по центру вертикали)
+            Vector2 textScale = Vector2.One;
+            Vector2 textSize = Font.MeasureString(Text, textScale);
+            Vector2 textPos = new(Position.X + 15f, Position.Y + (Size.Y - textSize.Y) * 0.5f);
+
+            Font.DrawText(batch, Text, textPos, textScale, Color4.Black, TextAlignment.Left);
+
+            // 3. Отрисовка вертикальной каретки
+            if (IsFocused && _caretVisible)
+            {
+                float caretX = textPos.X + textSize.X + 2f;
+                // Запасной глиф '|' или ручной прямоугольник через SpriteBatch
+                Font.DrawText(batch, "|", new Vector2(caretX, textPos.Y), textScale, Color4.Black, TextAlignment.Left);
+            }
+        }
+    }
     /// <summary>
     /// Компонент переключателя (Чекбокс)
     /// </summary>

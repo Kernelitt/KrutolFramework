@@ -1,4 +1,5 @@
-﻿using SixLabors.Fonts.Unicode;
+﻿using OpenTK.Audio.OpenAL;
+using SixLabors.Fonts.Unicode;
 using System.Xml;
 using System.Xml.Linq;
 
@@ -20,11 +21,13 @@ namespace KrutolFramework.Core
         public string Name { get; private set; }
         public DynamicTextureAtlas Atlas { get; private set; }
 
-        private readonly Dictionary<string, FontRenderer> _fonts = new();
-        private readonly Dictionary<string, ReanimDefinition> _animations = new();
-        private readonly Dictionary<string, ParticleSystemDefinition> _particles = new();
-        private readonly HashSet<string> _registeredTextures = new();
-
+        private readonly Dictionary<string, FontRenderer> _fonts = [];
+        private readonly Dictionary<string, ReanimDefinition> _animations = [];
+        private readonly Dictionary<string, ParticleSystemDefinition> _particles = [];
+        private readonly Dictionary<string, int> _audioBuffers = [];
+        private readonly HashSet<string> _registeredTextures = [];
+        private readonly HashSet<string> _registeredParticles = new();
+        private readonly HashSet<string> _registeredAnimations = new();
         public AssetGroup(string name, int atlasSize = 2048, int layersPerPage = 2)
         {
             Name = name;
@@ -33,10 +36,14 @@ namespace KrutolFramework.Core
 
         public TextureRegion LoadTexture(string assetName, string filePath, bool keepLocalPixels = false)
         {
-            string key = $"{Name}/{assetName}";
+            // Фикс: гарантируем, что в ключе и имени ресурса не будет пробелов
+            string cleanAssetName = assetName.Replace(" ", "");
+            string key = $"{Name}/{cleanAssetName}";
+
             _registeredTextures.Add(key);
             return Atlas.RegisterTexture(key, filePath, keepLocalPixels);
         }
+
 
         public FontRenderer LoadFont(string fontName, string fontPathOrName, int fontSize)
         {
@@ -48,9 +55,26 @@ namespace KrutolFramework.Core
             return font;
         }
 
-        /// <summary>
-        /// Загружает и парсит .reanim файл, привязывая его к текущей группе ресурсов.
-        /// </summary>
+        public int LoadAudio(string assetName, string filePath)
+        {
+            string key = $"{Name}/{assetName}";
+            if (_audioBuffers.TryGetValue(key, out var existingBuffer)) return existingBuffer;
+
+            if (!File.Exists(filePath))
+                throw new FileNotFoundException($"Аудиофайл не найден: {filePath}");
+
+            // Загружаем PCM-дату из WAV
+            byte[] data = WavLoader.LoadWav(filePath, out ALFormat format, out int sampleRate);
+
+            // Генерируем буфер OpenAL и заливаем данные в RAM/VRAM звуковой карты
+            int bufferId = AL.GenBuffer();
+            AL.BufferData(bufferId, format, data, sampleRate);
+
+            _audioBuffers[key] = bufferId;
+            Console.WriteLine($"[AssetManager] Аудио '{assetName}' успешно загружено в группу '{Name}'. Буфер ID: {bufferId}");
+            return bufferId;
+        }
+
         public ReanimDefinition LoadAnimation(string animName, string filePath)
         {
             if (_animations.TryGetValue(animName, out var existingAnim))
@@ -59,10 +83,20 @@ namespace KrutolFramework.Core
             }
 
             if (!File.Exists(filePath))
-                throw new FileNotFoundException($".reanim файл не найден: {filePath}");
+                throw new FileNotFoundException($"Файл анимации не найден: {filePath}");
 
-            // Парсим файл (код парсера находится ниже на Шаге 2)
-            ReanimDefinition animDef = ReanimParser.ParseXml(filePath);
+            ReanimDefinition animDef;
+
+            // Автоматическое переключение парсеров на основе расширения файла
+            if (filePath.EndsWith(".compiled", StringComparison.OrdinalIgnoreCase))
+            {
+                animDef = ReanimCompiledParser.ParseCompiled(filePath);
+            }
+            else
+            {
+                // Старый XML-парсер для классических текстовых .reanim файлов
+                animDef = ReanimParser.ParseXml(filePath);
+            }
 
             _animations[animName] = animDef;
             Console.WriteLine($"[AssetManager] Анимация '{animName}' успешно загружена в группу '{Name}'. Кадров: {animDef.FrameCount}");
@@ -71,9 +105,7 @@ namespace KrutolFramework.Core
 
         public void DiscoverAndLoadTextures(string relativeFolder, bool keepLocalPixels = false)
         {
-            // Вычисляем полный физический путь к общей корневой папке ассетов
             string rootFullPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, AssetManager.RootPath);
-            // Вычисляем полный физический путь к целевой папке для сканирования
             string fullFolderPath = Path.Combine(rootFullPath, relativeFolder);
 
             if (!Directory.Exists(fullFolderPath))
@@ -82,23 +114,22 @@ namespace KrutolFramework.Core
                 return;
             }
 
-            // Рекурсивно собираем все файлы картинок в этой папке
-            string[] allFiles = Directory.GetFiles(fullFolderPath, "*.png", SearchOption.AllDirectories);
+            // РЕШЕНИЕ: Сканируем файлы с поддержкой как .png, так и .jpg / .jpeg
+            string[] allFiles = [.. Directory.EnumerateFiles(fullFolderPath, "*.*", SearchOption.AllDirectories)
+                .Where(file => file.EndsWith(".png", StringComparison.OrdinalIgnoreCase) ||
+                               file.EndsWith(".jpg", StringComparison.OrdinalIgnoreCase) ||
+                               file.EndsWith(".jpeg", StringComparison.OrdinalIgnoreCase))];
 
-            Console.WriteLine($"[AssetManager] Начинаем автосканирование папки '{relativeFolder}'. Найдено файлов: {allFiles.Length}");
+            Console.WriteLine($"[AssetManager] Начинаем автосканирование папки '{relativeFolder}'. Найдено текстур (PNG/JPG): {allFiles.Length}");
 
             foreach (string fileFullPath in allFiles)
             {
-                // ЖЕЛЕЗНЫЙ СПОСОБ: Получаем чистый относительный путь без использования Substring
-                // На выходе будет, например: "reanim\CherryBomb_leaf3.png" или "images\button.png"
                 string relativeFilePath = Path.GetRelativePath(rootFullPath, fileFullPath);
-
-                // Генерируем ID по чистому относительному пути
                 string assetId = AssetManager.GenerateResourceIdFromPath(relativeFilePath);
 
                 try
                 {
-                    // Загружаем текстуру в атлас группы, используя сгенерированный ID
+                    // Загружаем текстуру (PNG или JPG) в атлас группы, используя сгенерированный ID
                     LoadTexture(assetId, fileFullPath, keepLocalPixels);
                 }
                 catch (Exception ex)
@@ -110,9 +141,100 @@ namespace KrutolFramework.Core
             Console.WriteLine($"[AssetManager] Группа '{Name}' успешно инициализирована. Всего текстур в атласе: {_registeredTextures.Count}");
         }
 
+        public delegate void AnimationDiscoveredHandler(string assetId, string relativeFilePath);
+        public static event AnimationDiscoveredHandler OnAnimationDiscovered;
 
-        // Добавьте этот метод внутрь класса AssetGroup в файле AssetManager.cs
-        // Полностью замените метод LoadParticleSystem внутри AssetGroup (в файле AssetManager.cs)
+        // 2. Модифицируем метод автосканирования анимаций
+        public void DiscoverAndLoadAnimations(string relativeFolder)
+        {
+            string rootFullPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, AssetManager.RootPath);
+            string fullFolderPath = Path.Combine(rootFullPath, relativeFolder);
+
+            if (!Directory.Exists(fullFolderPath)) return;
+
+            string[] files = Directory.GetFiles(fullFolderPath, "*.*", SearchOption.AllDirectories)
+                .Where(f => f.EndsWith(".reanim", StringComparison.OrdinalIgnoreCase) ||
+                            f.EndsWith(".compiled", StringComparison.OrdinalIgnoreCase)).ToArray();
+
+            foreach (string file in files)
+            {
+                string relative = Path.GetRelativePath(rootFullPath, file);
+
+                // Генерирует ID вида "REANIM_PEASHOOTER"
+                string assetId = AssetManager.GenerateResourceIdFromPath(relative)
+                    .Replace("IMAGE_", "")
+                    .Replace(".REANIM", "")
+                    .Replace(" ", ""); // ФИКС: Удаляем оставшееся расширение .reanim из ID
+
+                try
+                {
+                    LoadAnimation(assetId, file);
+                    _registeredAnimations.Add(assetId);
+
+                    OnAnimationDiscovered?.Invoke(assetId, relative);
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[AssetManager] Ошибка анимации {assetId}: {ex.Message}");
+                }
+            }
+        }
+
+
+        // Добавьте метод автосканирования систем частиц (.xml)
+        public void DiscoverAndLoadParticles(string relativeFolder)
+        {
+            string rootFullPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, AssetManager.RootPath);
+            string fullFolderPath = Path.Combine(rootFullPath, relativeFolder);
+
+            if (!Directory.Exists(fullFolderPath)) return;
+
+            string[] files = Directory.GetFiles(fullFolderPath, "*.xml", SearchOption.AllDirectories);
+            foreach (string file in files)
+            {
+                string relative = Path.GetRelativePath(rootFullPath, file);
+                // Генерирует ID вида "PARTICLE_PEASPLAT"
+                string assetId = AssetManager.GenerateResourceIdFromPath(relative).Replace("IMAGE_", "PARTICLE_");
+
+                try
+                {
+                    LoadParticleSystem(assetId, file);
+                    _registeredParticles.Add(assetId);
+                }
+                catch (Exception ex) { Console.WriteLine($"[AssetManager] Ошибка частиц {assetId}: {ex.Message}"); }
+            }
+        }
+
+        // Добавьте метод автосканирования звуков и музыки (.wav)
+        public void DiscoverAndLoadAudio(string relativeFolder)
+        {
+            string rootFullPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, AssetManager.RootPath);
+            string fullFolderPath = Path.Combine(rootFullPath, relativeFolder);
+
+            if (!Directory.Exists(fullFolderPath)) return;
+
+            string[] files = Directory.GetFiles(fullFolderPath, "*.wav", SearchOption.AllDirectories);
+            foreach (string file in files)
+            {
+                string relative = Path.GetRelativePath(rootFullPath, file);
+
+                // Разделяем аудио на префиксы SOUND_ или MUSIC_ на основе папки
+                string prefix = relative.Contains("music", StringComparison.OrdinalIgnoreCase) ? "MUSIC_" : "SOUND_";
+                string assetId = prefix + Path.GetFileNameWithoutExtension(relative).Replace(' ', '_').Replace('-', '_').ToUpper();
+
+                try
+                {
+                    byte[] data = WavLoader.LoadWav(file, out var format, out int sampleRate);
+                    int bufferId = AL.GenBuffer();
+                    AL.BufferData(bufferId, format, data, sampleRate);
+
+                    _audioBuffers[assetId] = bufferId;
+                    Console.WriteLine($"[AssetManager] Аудио '{assetId}' успешно автозагружено. Buffer ID: {bufferId}");
+                }
+                catch (Exception ex) { Console.WriteLine($"[AssetManager] Ошибка аудио {assetId}: {ex.Message}"); }
+            }
+        }
+
         public ParticleSystemDefinition LoadParticleSystem(string sysName, string filePath)
         {
             if (!File.Exists(filePath))
@@ -330,6 +452,11 @@ namespace KrutolFramework.Core
             return sysDef;
         }
 
+        public int GetAudio(string audioId)
+        {
+            if (_audioBuffers.TryGetValue(audioId.ToUpper(), out int id)) return id;
+            return 0;
+        }
         public ReanimDefinition GetAnimation(string animName)
         {
             if (_animations.TryGetValue(animName, out var anim)) return anim;
@@ -351,13 +478,21 @@ namespace KrutolFramework.Core
         public void Dispose()
         {
             _fonts.Clear();
-            _animations.Clear(); // Выгружаем тяжелые дефиниции треков и трансформаций из RAM
+            _animations.Clear();
+            _particles.Clear();
             _registeredTextures.Clear();
+
+            // Освобождаем буферы OpenAL
+            foreach (var bufferId in _audioBuffers.Values)
+            {
+                AL.DeleteBuffer(bufferId);
+            }
+            _audioBuffers.Clear();
 
             if (Atlas != null)
             {
                 Atlas.Dispose();
-                Console.WriteLine($"[AssetManager] Группа '{Name}' полностью выгружена из GPU/VRAM и RAM.");
+                Console.WriteLine($"[AssetManager] Группа '{Name}' полностью выгружена из GPU/VRAM, OpenAL и RAM.");
             }
         }
     }
@@ -367,13 +502,16 @@ namespace KrutolFramework.Core
         private static readonly Dictionary<string, AssetGroup> _groups = new();
         public static string RootPath { get; set; } = "";
         public static AssetGroup Active;
-        private static readonly DefLoadResPath[] _defLoadResPaths = new DefLoadResPath[]
-        {
+        private static readonly DefLoadResPath[] _defLoadResPaths =
+        [
             new("IMAGE_REANIM_", "reanim\\"),
-            new("IMAGE_REANIM_", "images\\"),
+            new("REANIM_", "animations\\"),
             new("IMAGE_", "particles\\"),
-            new("IMAGE_", "") // Дефолтный корень
-        };
+            new("SOUND_", "sounds\\"),
+            new("MUSIC_", "music\\"),
+            new("IMAGE_REANIM_", "images\\"),
+            new("IMAGE_", "")
+        ];
         public static AssetGroup CreateGroup(string groupName, int atlasSize = 2048, int layersPerPage = 2)
         {
             if (_groups.TryGetValue(groupName, out var existingGroup))
@@ -408,8 +546,6 @@ namespace KrutolFramework.Core
             return Path.Combine(AppDomain.CurrentDomain.BaseDirectory, RootPath, relativePath);
         }
 
-
-
         public static string GenerateResourceIdFromPath(string relativeFilePath)
         {
             if (string.IsNullOrWhiteSpace(relativeFilePath)) return "IMAGE_UNKNOWN";
@@ -417,7 +553,7 @@ namespace KrutolFramework.Core
             // 1. Нормализуем слеши и переводим в нижний регистр для безопасного сравнения
             string normalizedPath = relativeFilePath.Replace('/', '\\').ToLower();
 
-            // 2. Извлекаем чистую папку (например, "reanim") и чистое имя файла (например, "cherrybomb_leaf3")
+            // 2. Извлекаем чистую папку (например, "reanim") и чистое имя файла (например, "titlescreen")
             string directoryName = Path.GetDirectoryName(normalizedPath)?.Trim('\\') ?? "";
             string fileNameWithoutExt = Path.GetFileNameWithoutExtension(normalizedPath) ?? "";
 
@@ -426,34 +562,51 @@ namespace KrutolFramework.Core
 
             foreach (var resPath in _defLoadResPaths)
             {
-                // Приводим папку из конфигурации к нижнему регистру и убираем слеши для точного сравнения
                 string configDir = resPath.Directory.Replace('/', '\\').Trim('\\').ToLower();
-                if (!string.IsNullOrEmpty(configDir) && directoryName == configDir)
+
+                if (!string.IsNullOrEmpty(configDir) &&
+                    (directoryName == configDir || directoryName.StartsWith(configDir + "\\")))
                 {
                     prefix = resPath.Prefix;
                     break;
                 }
             }
 
-            // 4. Очищаем имя файла от пробелов, тире и спецсимволов, заменяя их на подчёркивание
+            // 4. Очищаем имя файла: тире меняем на подчёркивание, а ПРОБЕЛЫ УДАЛЯЕМ ПОЛНОСТЬЮ
             string cleanFileName = fileNameWithoutExt
                 .Replace('-', '_')
-                .Replace(' ', '_');
+                .Replace(" ", ""); // ФИКС: убираем пробелы вместо замены на подчёркивание
 
-            // 5. Собираем финальный ID в UPPERCASE без какого-либо ручного вырезания подстрок
-            string finalResourceId = (prefix + cleanFileName).ToUpper();
+            // 5. Собираем финальный ID в UPPERCASE и на всякий случай удаляем пробелы из всей строки
+            string finalResourceId = (prefix + cleanFileName).ToUpper().Replace(" ", "");
             return finalResourceId;
         }
 
-        public static TextureRegion? GetTexture(string assetName) => Active?.Atlas.GetRegion($"{Active.Name}/{assetName}");
+
+
+        public static TextureRegion? GetTexture(string assetName)
+        {
+            if (assetName == null) return null;
+
+            string cleanAssetName = assetName.Replace(" ", "").ToUpper();
+
+            if (!cleanAssetName.StartsWith("IMAGE_") && Active != null) cleanAssetName = "IMAGE_REANIM_" + cleanAssetName;
+            return Active?.Atlas.GetRegion($"{Active.Name}/{cleanAssetName}");
+        }
+
         public static ParticleSystemDefinition? GetParticle(string particleName) => Active?.GetParticle(particleName);
         public static ReanimDefinition? GetAnimation(string animName) => Active?.GetAnimation(animName);
         public static FontRenderer? GetFont(string fontName, int fontSize) => Active?.GetFont(fontName, fontSize);
+        public static int GetAudio(string assetName) => Active != null ? Active.GetAudio(assetName) : 0;
+
+
         public static void UnloadAll()
         {
             foreach (var group in _groups.Values) group.Dispose();
             _groups.Clear();
             GC.Collect();
         }
+
+
     }
 }

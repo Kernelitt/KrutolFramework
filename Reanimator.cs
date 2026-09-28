@@ -24,6 +24,8 @@ namespace KrutolFramework.Core
         public float? Alpha = null;
         public string ImageName = "";
         public string Text = "";
+
+        public string Font { get; internal set; }
     }
 
     public class ReanimTrack
@@ -41,11 +43,12 @@ namespace KrutolFramework.Core
 
     public class TrackInstance
     {
-        public int RenderGroup = 0; // 0 - Normal, -1 - Hidden
+        public int RenderGroup = 0;
         public Color4 TrackColor = Color4.White;
         public float ShakeX = 0;
         public float ShakeY = 0;
     }
+
 
     public class Reanimation
     {
@@ -55,7 +58,7 @@ namespace KrutolFramework.Core
         private readonly string _groupName;
 
         public float _animTime = 0f; // от 0.0 до 1.0 внутри активного диапазона
-        private float _animRate = 12f;
+        private readonly float _animRate = 12f;
 
         // ИСПРАВЛЕНО: Индексы теперь динамические и могут настраиваться пользователем
         private int _frameStart = 0;
@@ -63,12 +66,18 @@ namespace KrutolFramework.Core
 
         // Быстрый поиск индекса трека по его имени
         private readonly Dictionary<string, int> _trackNameToIndex = new(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, Vector2i> _namedAnimationBounds = new(StringComparer.OrdinalIgnoreCase);
 
         public Vector2 Position { get; set; } = Vector2.Zero;
         public Vector2 Scale { get; set; } = Vector2.One;
         public Color4 ColorOverride { get; set; } = Color4.White;
         public ReanimLoopType LoopType { get; set; } = ReanimLoopType.Loop;
         public bool IsDead { get; private set; } = false;
+        private readonly Dictionary<string, string> _imageOverrides = new(StringComparer.OrdinalIgnoreCase);
+        private float _flashTimer = 0f;
+        private const float FLASH_DURATION = 0.15f; // Длительность мигания при уроне
+        private TextureRegion[] _cachedTrackRegions;
+
 
         public Reanimation(ReanimDefinition definition, AssetGroup group)
         {
@@ -77,7 +86,6 @@ namespace KrutolFramework.Core
             _groupName = group.Name;
             _animRate = _definition.FPS;
 
-            // По умолчанию активный диапазон — вся анимация
             _frameStart = 0;
             _frameEnd = _definition.FrameCount - 1;
 
@@ -85,13 +93,156 @@ namespace KrutolFramework.Core
             for (int i = 0; i < _trackInstances.Length; i++)
             {
                 _trackInstances[i] = new TrackInstance();
-                // Заполняем карту имен для мгновенного поиска треков
                 _trackNameToIndex[_definition.Tracks[i].Name] = i;
             }
 
+            // Сначала извлекаем маркеры и препроцессим данные костей
+            ExtractNamedAnimationTracks();
             PreprocessDefinition();
+
+            // ИСПРАВЛЕННЫЙ КЭШ ТЕКСТУР: Ищем картинку по всему таймлайну трека, а не только на 0-м кадра!
+            _cachedTrackRegions = new TextureRegion[_definition.Tracks.Count];
+            for (int i = 0; i < _definition.Tracks.Count; i++)
+            {
+                var track = _definition.Tracks[i];
+                string foundImageName = "";
+
+                // Пробегаем по всем кадрам трека, пока не найдем имя картинки
+                for (int f = 0; f < track.Transforms.Length; f++)
+                {
+                    if (!string.IsNullOrEmpty(track.Transforms[f].ImageName))
+                    {
+                        foundImageName = track.Transforms[f].ImageName;
+                        break; // Нашли, выходим из внутреннего цикла
+                    }
+                }
+
+                if (!string.IsNullOrEmpty(foundImageName))
+                {
+                    string queryName = $"{_groupName}/{foundImageName}";
+                    try
+                    {
+                        _cachedTrackRegions[i] = _atlas.GetRegion(queryName);
+
+                        // Проверка на то, что атлас реально отдал текстуру
+                        if (_cachedTrackRegions[i].AtlasTextureHandle == 0)
+                        {
+                            Console.WriteLine($"[Reanimation Warning] Атлас вернул пустой хэндл для трека '{track.Name}' (искали: '{queryName}')");
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"[Reanimation Atlas Error] Ошибка поиска региона для трека '{track.Name}' ('{queryName}'): {ex.Message}");
+                    }
+                }
+            }
         }
 
+
+        private void ExtractNamedAnimationTracks()
+        {
+            _namedAnimationBounds.Clear();
+
+            foreach (var track in _definition.Tracks)
+            {
+                // 1. Проверяем, является ли имя ТРЕКА маркером анимации
+                if (track.Name.StartsWith("anim_", StringComparison.OrdinalIgnoreCase))
+                {
+                    Console.WriteLine(track.Name);
+                    string cleanBoundsName = track.Name.Trim().ToLower();
+                    int startFrame = -1;
+                    int endFrame = -1;
+
+                    // 2. Сканируем таймлайн этого трека, чтобы найти реальные границы
+                    for (int i = 0; i < track.Transforms.Length; i++)
+                    {
+                        var t = track.Transforms[i];
+
+                        // В движке PopCap кадр считается валидным, если f >= 0
+                        if (t.Frame != null && t.Frame.Value >= 0f)
+                        {
+                            if (startFrame == -1)
+                            {
+                                startFrame = i; // Нашли первый кадр, где анимация начинается
+                            }
+                            endFrame = i; // Двигаем конечный кадр вперед, пока идут валидные данные
+                        }
+                        // Если встретили f = -1, это явный маркер окончания анимации в PopCap
+                        else if (t.Frame != null && t.Frame.Value == -1f)
+                        {
+                            if (startFrame != -1)
+                            {
+                                break; // Анимация закончилась, выходим из поиска для этого трека
+                            }
+                        }
+                    }
+
+                    // 3. Если трек не пустой и мы нашли его живые кадры
+                    if (startFrame != -1)
+                    {
+                        if (_namedAnimationBounds.TryGetValue(cleanBoundsName, out Vector2i existingBounds))
+                        {
+                            int currentLength = endFrame - startFrame;
+                            int existingLength = existingBounds.Y - existingBounds.X;
+
+                            if (currentLength < existingLength)
+                            {
+                                _namedAnimationBounds[cleanBoundsName] = new Vector2i(startFrame, endFrame);
+                            }
+                        }
+                        else
+                        {
+                            _namedAnimationBounds[cleanBoundsName] = new Vector2i(startFrame, endFrame);
+                        }
+
+                        Console.WriteLine($"[Reanimation] Успешно зарегистрирован трек-маркер '{cleanBoundsName}': кадры {startFrame} - {endFrame}");
+                    }
+                }
+            }
+        }
+
+
+
+
+        /// <summary>
+        /// Новая удобная перегрузка: устанавливает диапазон кадров по имени служебного трека из XML
+        /// </summary>
+        public void SetFrameBounds(string animationName)
+        {
+            if (_namedAnimationBounds.TryGetValue(animationName, out Vector2i bounds))
+            {
+                SetFrameBounds(bounds.X, bounds.Y);
+            }
+            else
+            {
+                Console.WriteLine($"[Reanimation Error] Не удалось найти маркер анимации с именем '{animationName}'!");
+                // Запасной безопасный вариант — сбросить на полную длину
+                SetFrameBounds(0, _definition.FrameCount - 1);
+            }
+        }
+        public void SetStaticFrame(string animationName, bool isLast)
+        {
+            if (_namedAnimationBounds.TryGetValue(animationName, out Vector2i bounds))
+            {
+                if (!isLast)
+                {
+                    SetFrameBounds(bounds.X, bounds.X);
+                }
+                else
+                {
+                    SetFrameBounds(bounds.Y, bounds.Y);
+                }
+            }
+            else
+            {
+                Console.WriteLine($"[Reanimation Error] Не удалось найти маркер анимации с именем '{animationName}'!");
+                // Запасной безопасный вариант — сбросить на полную длину
+                SetFrameBounds(0, _definition.FrameCount - 1);
+            }
+        }
+
+        public void TriggerDamageFlash() => _flashTimer = FLASH_DURATION;
+        
         /// <summary>
         /// Устанавливает начальный и конечный кадры для проигрывания конкретного участка анимации.
         /// </summary>
@@ -108,7 +259,7 @@ namespace KrutolFramework.Core
         }
 
         /// <summary>
-        /// Полностью включает или выключает отрисовку конкретного трека (кости/слоя) по его названию.
+        /// Полностью включает или выключает отрисовку конкретного трека по его названию.
         /// </summary>
         public void SetTrackVisible(string trackName, bool visible)
         {
@@ -127,82 +278,91 @@ namespace KrutolFramework.Core
         {
             foreach (var track in _definition.Tracks)
             {
-                float prevTransX = 0f;
-                float prevTransY = 0f;
-                float prevSkewX = 0f;
-                float prevSkewY = 0f;
-                float prevScaleX = 1f;
-                float prevScaleY = 1f;
+                float prevTransX = 0f; float prevTransY = 0f;
+                float prevSkewX = 0f; float prevSkewY = 0f;
+                float scaleX_Global = 1f; float scaleY_Global = 1f; // Внутреннее имя изменено во избежание конфликтов
+
+                // По умолчанию альфа всегда равна 1.0f (видимый)
                 float prevAlpha = 1f;
 
-                float prevFrame = -1f; // Каждый трек изначально скрыт
+                // Стартуем с 0f (кадр активен), пока явный маркер -1 в XML не скроет трек
+                float prevFrame = 0f;
                 string prevImg = "";
+
+                // ВАЖНО: Убираем первый проход, который искал картинку "из будущего"!
+                // PopCap наследует картинки строго по ходу таймлайна.
 
                 for (int i = 0; i < track.Transforms.Length; i++)
                 {
                     var t = track.Transforms[i];
 
-                    // 1. Фиксируем, была ли картинка записана в XML ИМЕННО для этой строки (до наследования)
-                    bool stringHasExplicitImage = !string.IsNullOrEmpty(t.ImageName);
-
-                    // 2. Наследование имени изображения по цепочке
-                    if (!stringHasExplicitImage)
-                    {
-                        t.ImageName = prevImg;
-                    }
-                    else
+                    // Наследование имени картинки (строго от предыдущего кадра к следующему)
+                    if (!string.IsNullOrEmpty(t.ImageName))
                     {
                         prevImg = t.ImageName;
                     }
+                    else
+                    {
+                        t.ImageName = prevImg;
+                    }
 
-                    // 3. СТРОГИЙ ПРИОРИТЕТ ВЫЧИСЛЕНИЯ FRAME (ВИДИМОСТИ)
+                    // Обработка номера кадра (Frame)
                     if (t.Frame != null)
                     {
-                        // ПРАВИЛО 1: Если в XML явно указан <f> (например, <f>-1</f>), 
-                        // мы берем его безоговорочно. Он имеет абсолютный приоритет!
                         prevFrame = t.Frame.Value;
                     }
                     else
                     {
-                        // ПРАВИЛО 2: Тега <f> нет. Если в этой строке XML принудительно подсунули 
-                        // НОВУЮ картинку, значит трек должен проснуться и стать видимым (0f)
-                        if (stringHasExplicitImage)
+                        if (string.IsNullOrEmpty(t.ImageName) && !track.Name.StartsWith("anim_", StringComparison.OrdinalIgnoreCase))
                         {
-                            t.Frame = 0f;
-                            prevFrame = 0f;
+                            t.Frame = -1f;
                         }
                         else
                         {
-                            // ПРАВИЛО 3: Ничего не указано — просто наследуем состояние предыдущего кадра
                             t.Frame = prevFrame;
                         }
+                        prevFrame = t.Frame.Value;
                     }
 
-                    // 4. Наследование стандартных матричных параметров
+                    // Обработка альфа-канала (прозрачности)
+                    if (t.Alpha != null)
+                    {
+                        prevAlpha = t.Alpha.Value;
+                    }
+                    else
+                    {
+                        t.Alpha = prevAlpha;
+                    }
+
+                    // Наследование стандартных трансформаций костей
                     if (t.TransX == null) t.TransX = prevTransX; else prevTransX = t.TransX.Value;
                     if (t.TransY == null) t.TransY = prevTransY; else prevTransY = t.TransY.Value;
                     if (t.SkewX == null) t.SkewX = prevSkewX; else prevSkewX = t.SkewX.Value;
                     if (t.SkewY == null) t.SkewY = prevSkewY; else prevSkewY = t.SkewY.Value;
-                    if (t.ScaleX == null) t.ScaleX = prevScaleX; else prevScaleX = t.ScaleX.Value;
-                    if (t.ScaleY == null) t.ScaleY = prevScaleY; else prevScaleY = t.ScaleY.Value;
-                    if (t.Alpha == null) t.Alpha = prevAlpha; else prevAlpha = t.Alpha.Value;
+                    if (t.ScaleX == null) t.ScaleX = scaleX_Global; else scaleX_Global = t.ScaleX.Value;
+                    if (t.ScaleY == null) t.ScaleY = scaleY_Global; else scaleY_Global = t.ScaleY.Value;
 
-                    // 5. Маскирование картинки исключительно для рендерера текущего кадра, если он скрыт
-                    if (t.Frame < 0f)
-                    {
-                        t.ImageName = "";
-                    }
+                    // Записываем очищенное состояние обратно в массив
+                    track.Transforms[i] = t;
                 }
             }
         }
 
 
+
+        public bool HasMarker(string animationName) => _namedAnimationBounds.ContainsKey(animationName);
+
         public void Update(float deltaTime)
         {
             if (IsDead || _definition.FrameCount == 0) return;
 
-            // В PopCap межкадровых интервалов всегда на 1 меньше, чем общее количество кадров
             int activeIntervals = _frameEnd - _frameStart;
+
+            if (_flashTimer > 0f)
+            {
+                _flashTimer -= deltaTime; 
+                if (_flashTimer < 0f) _flashTimer = 0f;
+            }
 
             if (activeIntervals <= 0)
             {
@@ -231,126 +391,176 @@ namespace KrutolFramework.Core
                 }
             }
         }
+        private Vector2 _v0, _v1, _v2, _v3;
 
         public void Render(SpriteBatch batch)
         {
             if (IsDead || _definition.FrameCount == 0) return;
 
-            int activeIntervals = _frameEnd - _frameStart;
+            int activeIntervals = (_frameEnd - _frameStart) + 1;
+            if (activeIntervals <= 0) activeIntervals = 1;
 
-            // Безопасное удержание времени в рамках [0.0, 1.0)
+            float positionInTracks = _frameStart + _animTime * (activeIntervals - 1); // Интерполируем внутри живых кадров
+            float aAnimFrameBefore = MathF.Floor(positionInTracks);
+
+            float fraction = positionInTracks - aAnimFrameBefore;
+            int frameBefore = (int)aAnimFrameBefore;
+
+            // ВАЖНО: frameAfter жестко ограничивается рамками текущей фазы (_frameEnd)
+            int frameAfter = frameBefore + 1;
+            if (frameAfter > _frameEnd)
+            {
+                frameAfter = _frameEnd;
+                fraction = 0f; // Прекращаем интерполяцию, мы на финише
+            }
+
+            frameBefore = Math.Clamp(frameBefore, _frameStart, _frameEnd);
+
+            if (frameBefore >= _frameEnd) { frameBefore = _frameEnd; frameAfter = _frameEnd; fraction = 0f; }
+            if (frameAfter > _frameEnd) { frameAfter = frameBefore; fraction = 0f; }
+            if (frameBefore < _frameStart) frameBefore = _frameStart;
+
+            // Включаем или выключаем белый flash на шейдере батча
+            float flashIntensity = _flashTimer > 0f ? (_flashTimer / FLASH_DURATION) * 0.75f : 0f;
+
+            float baseAlpha = ColorOverride.A;
+
+            // Кэшируем значения масштаба для цикла
+            float scaleX_Global = Scale.X;
+            float scaleY_Global = Scale.Y;
+            float posX_Global = Position.X;
+            float posY_Global = Position.Y;
+
+            // Быстрый перевод градусов в радианы одной операцией
+            const float degToRad = MathF.PI / 180.0f;
+
+            for (int i = 0; i < _definition.Tracks.Count; i++)
+            {
+                var instance = _trackInstances[i];
+                if (instance.RenderGroup == -1) continue;
+
+                var track = _definition.Tracks[i];
+                var tBefore = track.Transforms[frameBefore];
+
+                if (tBefore.Frame == null || tBefore.Frame < 0f || string.IsNullOrEmpty(tBefore.ImageName)) continue;
+
+                TextureRegion region;
+                string originalImageName = tBefore.ImageName;
+
+                if (_imageOverrides.Count > 0 && _imageOverrides.TryGetValue(originalImageName, out string? overriddenName))
+                {
+                    region = _atlas.GetRegion($"{_groupName}/{overriddenName}");
+                }
+                else
+                {
+                    region = _cachedTrackRegions[i];
+                    if (region.AtlasTextureHandle == 0)
+                    {
+                        region = _atlas.GetRegion($"{_groupName}/{originalImageName}");
+                    }
+                }
+
+                // КРИТИЧЕСКИЙ ВЫВОД: Если регион так и не найден, пишем в консоль имя потерянного ассета
+                if (region.AtlasTextureHandle == 0)
+                {
+                    // Чтобы не засорять лог 60 раз в секунду, выводим только на первом кадре фазы
+                    if (frameBefore == _frameStart)
+                    {
+                        Console.WriteLine($"[Reanimation Critical] Трек '{track.Name}' не отрисован! Текстура '{_groupName}/{originalImageName}' отсутствует в атласе.");
+                    }
+                    continue;
+                }
+
+                var tAfter = track.Transforms[frameAfter];
+
+                // Линейная интерполяция (SIMD здесь не нужен, но пишем в одну строку для инлайнинга компилятором)
+                float alpha = tBefore.Alpha.Value + (tAfter.Alpha.Value - tBefore.Alpha.Value) * fraction;
+                float finalAlpha = alpha * instance.TrackColor.A * baseAlpha;
+                if (finalAlpha <= 0.001f) continue;
+
+                float transX = tBefore.TransX.Value + (tAfter.TransX.Value - tBefore.TransX.Value) * fraction;
+                float transY = tBefore.TransY.Value + (tAfter.TransY.Value - tBefore.TransY.Value) * fraction;
+                float skewX = tBefore.SkewX.Value + (tAfter.SkewX.Value - tBefore.SkewX.Value) * fraction;
+                float skewY = tBefore.SkewY.Value + (tAfter.SkewY.Value - tBefore.SkewY.Value) * fraction;
+                float scaleX = tBefore.ScaleX.Value + (tAfter.ScaleX.Value - tBefore.ScaleX.Value) * fraction;
+                float scaleY = tBefore.ScaleY.Value + (tAfter.ScaleY.Value - tBefore.ScaleY.Value) * fraction;
+
+                float radSkewX = -(skewX * degToRad);
+                float radSkewY = -(skewY * degToRad);
+
+                // ОПТИМИЗАЦИЯ: Компилятор .NET 8+ автоматически заменяет Sin и Cos на один системный вызов SinCos, если они идут подряд
+                float cosSkewX = MathF.Cos(radSkewX);
+                float sinSkewX = MathF.Sin(radSkewX);
+                float cosSkewY = MathF.Cos(radSkewY);
+                float sinSkewY = MathF.Sin(radSkewY);
+
+                float m11 = cosSkewX * scaleX * scaleX_Global;
+                float m12 = -sinSkewX * scaleX * scaleY_Global;
+                float m21 = sinSkewY * scaleY * scaleX_Global;
+                float m22 = cosSkewY * scaleY * scaleY_Global;
+                float m31 = transX * scaleX_Global + posX_Global;
+                float m32 = transY * scaleY_Global + posY_Global;
+
+                float w = region.Width;
+                float h = region.Height;
+
+                // ОПТИМИЗАЦИЯ: Избегаем создания новых объектов структур на куче/стеке
+                _v0.X = m31;
+                _v0.Y = m32;
+
+                _v1.X = w * m11 + m31;
+                _v1.Y = w * m12 + m32;
+
+                _v2.X = w * m11 + h * m21 + m31;
+                _v2.Y = w * m12 + h * m22 + m32;
+
+                _v3.X = h * m21 + m31;
+                _v3.Y = h * m22 + m32;
+
+                batch.DrawDirectMatrix(region, _v0, _v1, _v2, _v3, new Color4(ColorOverride.R, ColorOverride.G, ColorOverride.B, finalAlpha), flashIntensity);
+            }
+        }
+
+
+        public Vector2 GetTrackPosition(string trackName)
+        {
+            if (!_trackNameToIndex.TryGetValue(trackName, out int index) || _definition.FrameCount == 0)
+                return Position; // Возвращаем базовую точку, если трек не найден
+
+            int activeIntervals = _frameEnd - _frameStart;
             float clampedTime = _animTime % 1.0f;
             if (clampedTime < 0f) clampedTime += 1.0f;
 
-            // Расчет текущей позиции кадра
             float positionInTracks = _frameStart + clampedTime * activeIntervals;
-
             int frameBefore = (int)MathF.Floor(positionInTracks);
             int frameAfter = frameBefore + 1;
             float fraction = positionInTracks - frameBefore;
 
-            // Если ушли за границы диапазона — жестко фиксируем кадры на конце
-            if (frameBefore >= _frameEnd)
-            {
-                frameBefore = _frameEnd;
-                frameAfter = _frameEnd;
-                fraction = 0f;
-            }
-
-            if (frameAfter > _frameEnd)
-            {
-                frameAfter = frameBefore;
-                fraction = 0f;
-            }
-
+            if (frameBefore >= _frameEnd) { frameBefore = _frameEnd; frameAfter = _frameEnd; fraction = 0f; }
+            if (frameAfter > _frameEnd) { frameAfter = frameBefore; fraction = 0f; }
             if (frameBefore < _frameStart) frameBefore = _frameStart;
 
-            // Рендерим треки
-            for (int i = 0; i < _definition.Tracks.Count; i++)
+            var track = _definition.Tracks[index];
+            var tBefore = track.Transforms[frameBefore];
+            var tAfter = track.Transforms[frameAfter];
+
+            // Интерполируем локальные координаты трека
+            float transX = tBefore.TransX.Value + (tAfter.TransX.Value - tBefore.TransX.Value) * fraction;
+            float transY = tBefore.TransY.Value + (tAfter.TransY.Value - tBefore.TransY.Value) * fraction;
+
+            // Переводим в глобальные экранные координаты с учетом масштаба всей анимации
+            return new Vector2(transX * Scale.X + Position.X, transY * Scale.Y + Position.Y);
+        }
+        public void OverrideTrackImage(string originalImageName, string newImageName)
+        {
+            if (string.IsNullOrEmpty(newImageName))
             {
-                var track = _definition.Tracks[i];
-                var instance = _trackInstances[i];
-
-                if (instance.RenderGroup == -1) continue;
-
-                var tBefore = track.Transforms[frameBefore];
-                var tAfter = track.Transforms[frameAfter];
-
-                // ИСПРАВЛЕНО: Проверяем видимость СТРОГО по текущему кадру (tBefore).
-                // Если текущий кадр скрыт (null или < 0), то только тогда мы пропускаем трек.
-                // Больше никакого заглядывания в tAfter.Frame, которое вызывало преждевременное исчезновение деталей!
-                if (tBefore.Frame == null || tBefore.Frame < 0f)
-                {
-                    continue;
-                }
-
-                // Плавная интерполяция параметров движения
-                float transX = MathHelper.Lerp(tBefore.TransX.Value, tAfter.TransX.Value, fraction);
-                float transY = MathHelper.Lerp(tBefore.TransY.Value, tAfter.TransY.Value, fraction);
-                float skewX = MathHelper.Lerp(tBefore.SkewX.Value, tAfter.SkewX.Value, fraction);
-                float skewY = MathHelper.Lerp(tBefore.SkewY.Value, tAfter.SkewY.Value, fraction);
-                float scaleX = MathHelper.Lerp(tBefore.ScaleX.Value, tAfter.ScaleX.Value, fraction);
-                float scaleY = MathHelper.Lerp(tBefore.ScaleY.Value, tAfter.ScaleY.Value, fraction);
-                float alpha = MathHelper.Lerp(tBefore.Alpha.Value, tAfter.Alpha.Value, fraction);
-
-                // Если у tBefore стерто имя картинки (из-за f=-1), мы проверили это выше.
-                // Но на всякий случай страхуем строку от пустоты перед выборкой из атласа.
-                if (string.IsNullOrEmpty(tBefore.ImageName)) continue;
-
-                TextureRegion region;
-                try
-                {
-                    string queryName = $"{_groupName}/{tBefore.ImageName}";
-                    region = _atlas.GetRegion(queryName);
-                }
-                catch
-                {
-                    continue;
-                }
-
-                Matrix3 transformMatrix = CalculatePopCapMatrix(transX, transY, skewX, skewY, scaleX, scaleY, region.Width, region.Height);
-                RenderTrackQuad(batch, region, transformMatrix, alpha * instance.TrackColor.A * ColorOverride.A);
+                _imageOverrides.Remove(originalImageName);
             }
-        }
-
-
-
-
-
-        private Matrix3 CalculatePopCapMatrix(float tx, float ty, float sx, float sy, float scX, float scY, float imgW, float imgH)
-        {
-            float radSkewX = -(sx * MathF.PI / 180.0f);
-            float radSkewY = -(sy * MathF.PI / 180.0f);
-
-            Matrix3 m = Matrix3.Identity;
-
-            m.M11 = MathF.Cos(radSkewX) * scX;
-            m.M12 = -MathF.Sin(radSkewX) * scX;
-            m.M21 = MathF.Sin(radSkewY) * scY;
-            m.M22 = MathF.Cos(radSkewY) * scY;
-            m.M31 = tx * Scale.X + Position.X ;
-            m.M32 = ty * Scale.Y + Position.Y ;
-
-            m.M11 *= Scale.X; m.M12 *= Scale.Y;
-            m.M21 *= Scale.X; m.M22 *= Scale.Y;
-
-            return m;
-        }
-
-        private void RenderTrackQuad(SpriteBatch batch, TextureRegion region, Matrix3 mat, float finalAlpha)
-        {
-            float w = region.Width;
-            float h = region.Height;
-
-            // В оригинальном движке PopCap PvZ опорная точка (Pivot) для отрисовки частей 
-            // находится в левом верхнем углу элемента (0, 0), а не по центру. 
-            // Изменим локальные координаты вершин квада, чтобы анимация не "разваливалась":
-            Vector3 v0 = new Vector3(0, 0, 1.0f) * mat;
-            Vector3 v1 = new Vector3(w, 0, 1.0f) * mat;
-            Vector3 v2 = new Vector3(w, h, 1.0f) * mat;
-            Vector3 v3 = new Vector3(0, h, 1.0f) * mat;
-
-            batch.DrawDirectMatrix(region, v0.Xy, v1.Xy, v2.Xy, v3.Xy, new Color4(ColorOverride.R, ColorOverride.G, ColorOverride.B, finalAlpha));
+            else
+            {
+                _imageOverrides[originalImageName] = newImageName;
+            }
         }
     }
 
@@ -398,8 +608,8 @@ namespace KrutolFramework.Core
                                 SkewX = ReadFloatChild(tNode, "kx"),
                                 SkewY = ReadFloatChild(tNode, "ky"),
                                 Frame = ReadFloatChild(tNode, "f"),
+                                Alpha = ReadFloatChild(tNode, "a"),
 
-                                // Добавлена безопасность .Trim() на случай лишних пробелов в XML
                                 ImageName = tNode.SelectSingleNode("i")?.InnerText?.Trim() ?? "",
                                 Text = tNode.SelectSingleNode("text")?.InnerText?.Trim() ?? ""
                             };

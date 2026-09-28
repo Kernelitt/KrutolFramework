@@ -1,4 +1,5 @@
 ﻿using OpenTK.Mathematics;
+using OpenTK.Windowing.Common;
 using OpenTK.Windowing.Desktop;
 using OpenTK.Windowing.GraphicsLibraryFramework;
 
@@ -50,11 +51,53 @@ namespace KrutolFramework.Core
                 return new Vector2(virtualX, virtualY);
             }
         }
+
+        private static readonly List<char> _frameTextBuffer = new List<char>();
+
+        /// <summary>
+        /// Возвращает список символов, введённых на ЭТОМ кадре
+        /// </summary>
+        public static List<char> GetFrameTextInput()
+        {
+            lock (_frameTextBuffer)
+            {
+                return new List<char>(_frameTextBuffer);
+            }
+        }
+
+        /// <summary>
+        /// Очищает буфер текста в конце каждого кадра.
+        /// Должно вызываться в LawnApp.cs в OnUpdateFrame.
+        /// </summary>
+        public static void ClearFrameTextInput()
+        {
+            lock (_frameTextBuffer)
+            {
+                _frameTextBuffer.Clear();
+            }
+        }
+
         public static void Initialize(GameWindow window)
         {
             _window = window;
             _mouseState = window.MouseState;
             _keyboardState = window.KeyboardState;
+            _window.TextInput += (TextInputEventArgs e) =>
+            {
+                if (!string.IsNullOrEmpty(e.AsString))
+                {
+                    lock (_frameTextBuffer)
+                    {
+                        foreach (char c in e.AsString)
+                        {
+                            if (!char.IsControl(c))
+                            {
+                                _frameTextBuffer.Add(c);
+                            }
+                        }
+                    }
+                }
+            };
         }
 
         /// <summary>
@@ -72,18 +115,11 @@ namespace KrutolFramework.Core
             MousePosition = new Vector2(_mouseState.X, _mouseState.Y);
         }
 
-        /// <summary>
-        /// Проверка: удерживается ли левая кнопка мыши прямо сейчас.
-        /// </summary>
         public static bool IsMouseButtonDown(MouseButton button)
             {
             return _mouseState?.IsButtonDown(button) ?? false;
             }
 
-        /// <summary>
-        /// Проверка: была ли левая кнопка мыши НАЖАТА именно в текущем кадре.
-        /// (Возвращает true только один раз за клик, предотвращая спам).
-        /// </summary>
         public static bool IsMouseButtonPressed(MouseButton button)
         {
             if (button == MouseButton.Left)
