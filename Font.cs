@@ -30,25 +30,34 @@ namespace KrutolFramework.Core
         private readonly Dictionary<char, FontGlyph> _glyphs = [];
         public float LineSpacing { get; private set; }
 
-        public FontRenderer(DynamicTextureAtlas atlas, string fontNameOrPath, int fontSize)
+        // Добавлен параметр fontData для прозрачной загрузки TrueType-шрифтов из памяти (архивов)
+        public FontRenderer(DynamicTextureAtlas atlas, string fontNameOrPath, int fontSize, byte[]? fontData = null)
         {
             Font font;
-            if (File.Exists(fontNameOrPath))
+
+            if (fontData != null && fontData.Length > 0)
             {
+                // Успешно считали бинарные данные (.ttf) из архива или диска
+                using var fontStream = new MemoryStream(fontData);
                 var collection = new FontCollection();
-                var family = collection.Add(fontNameOrPath);
+                var family = collection.Add(fontStream);
                 font = family.CreateFont(fontSize, FontStyle.Regular);
             }
             else
             {
+                // Если бинарных данных нет, обрабатываем строку как имя системного шрифта (например, "Arial")
                 if (SystemFonts.TryGet(fontNameOrPath, out var family))
                 {
                     font = family.CreateFont(fontSize, FontStyle.Regular);
                 }
                 else
                 {
-                    font = SystemFonts.CreateFont(SystemFonts.Collection.Families.GetEnumerator().Current.Name, fontSize);
-                    Console.WriteLine($"[Font] Шрифт '{fontNameOrPath}' не найден. Используется системный по умолчанию.");
+                    // Тотальный фолбек на самый первый доступный шрифт в ОС во избежание крэша
+                    var enumerator = SystemFonts.Collection.Families.GetEnumerator();
+                    string fallbackName = enumerator.MoveNext() ? enumerator.Current.Name : "Arial";
+
+                    font = SystemFonts.CreateFont(fallbackName, fontSize);
+                    Console.WriteLine($"[Font Warning] Шрифт '{fontNameOrPath}' не найден ни в архиве, ни в системе. Использован: {fallbackName}");
                 }
             }
 
@@ -56,6 +65,7 @@ namespace KrutolFramework.Core
             float scaleFactor = (float)fontSize / fontMetrics.UnitsPerEm;
             LineSpacing = fontMetrics.HorizontalMetrics.LineHeight * scaleFactor;
 
+            // Набор символов для предгенерации глифов атласа (поддерживает русский, английский и спецсимволы)
             string charSet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.,!?-+=()_/\\:;@#абвгдеёжзийклмнопрстуфхцчшщъыьэюяАБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯ ";
             var textOptions = new TextOptions(font);
 
@@ -97,7 +107,10 @@ namespace KrutolFramework.Core
                     img.CopyPixelDataTo(pixelData);
                 }
 
-                string glyphKey = $"font_{fontNameOrPath}_{fontSize}_{c}";
+                // Генерируем уникальный ключ для сохранения пикселей буквы в текстурный атлас
+                string cleanFontName = Path.GetFileNameWithoutExtension(fontNameOrPath).Replace(" ", "");
+                string glyphKey = $"font_{cleanFontName}_{fontSize}_{c}";
+
                 TextureRegion region = atlas.RegisterRawPixels(glyphKey, paddedWidth, paddedHeight, pixelData);
 
                 _glyphs[c] = new FontGlyph
@@ -112,9 +125,6 @@ namespace KrutolFramework.Core
             }
         }
 
-        /// <summary>
-        /// Вычисляет размеры переданной строки (длину самой широкой подстроки и общую высоту)
-        /// </summary>
         public Vector2 MeasureString(string text, Vector2 scale)
         {
             if (string.IsNullOrEmpty(text)) return Vector2.Zero;
@@ -155,7 +165,6 @@ namespace KrutolFramework.Core
                 Vector2 lineSize = MeasureString(line, scale);
                 float startX = position.X;
 
-                // Смещение стартовой позиции каретки X в зависимости от типа выравнивания
                 if (alignment == TextAlignment.Center)
                 {
                     startX -= lineSize.X * 0.5f;

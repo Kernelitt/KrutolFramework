@@ -9,44 +9,65 @@ namespace KrutolFramework.Core
     {
         private const int MagicZlib = -559022380; // 0xDEADBEEF (в int32)
 
+        // Старый метод для обратной совместимости (чтение с диска)
         public static ReanimDefinition ParseCompiled(string filePath)
         {
             using (FileStream fs = File.OpenRead(filePath))
             {
-                // Проверяем сжатие Zlib
-                byte[] magicBytes = new byte[4];
-                fs.Read(magicBytes, 0, 4);
-                int magic = BitConverter.ToInt32(magicBytes, 0);
+                return ParseCompiled(fs);
+            }
+        }
 
-                fs.Position = 0;
+        // НОВЫЙ МЕТОД: Чтение скомпилированной анимации прямо из потока архива
+        public static ReanimDefinition ParseCompiled(Stream fs)
+        {
+            // Проверяем сжатие Zlib
+            byte[] magicBytes = new byte[4];
+            fs.Read(magicBytes, 0, 4);
+            int magic = BitConverter.ToInt32(magicBytes, 0);
 
-                if (magic == MagicZlib)
+            // Сбрасываем позицию назад, так как прочитали 4 байта
+            if (fs.CanSeek)
+            {
+                fs.Position -= 4;
+            }
+            else
+            {
+                // Если поток из Zip-архива не поддерживает Seek (или обратный сдвиг),
+                // мы конкатенируем эти 4 байта или создаем MemoryStream, чтобы не сломать парсер.
+                MemoryStream msFull = new MemoryStream();
+                msFull.Write(magicBytes, 0, 4);
+                fs.CopyTo(msFull);
+                msFull.Position = 0;
+                fs = msFull;
+            }
+
+            if (magic == MagicZlib)
+            {
+                // Файл сжат ZLib
+                using (BinaryReader br = new BinaryReader(fs, Encoding.UTF8, leaveOpen: true))
                 {
-                    // Файл сжат ZLib
-                    using (BinaryReader br = new BinaryReader(fs))
-                    {
-                        br.ReadInt32(); // Пропускаем magic
-                        int decompressedSize = br.ReadInt32(); // Размер распакованных данных
+                    br.ReadInt32(); // Пропускаем magic
+                    int decompressedSize = br.ReadInt32(); // Размер распакованных данных
 
-                        using (ZLibStream zlib = new ZLibStream(fs, CompressionMode.Decompress))
-                        using (MemoryStream ms = new MemoryStream(decompressedSize))
+                    using (ZLibStream zlib = new ZLibStream(fs, CompressionMode.Decompress, leaveOpen: true))
+                    using (MemoryStream ms = new MemoryStream(decompressedSize))
+                    {
+                        zlib.CopyTo(ms);
+                        ms.Position = 0;
+                        using (BinaryReader decompressedReader = new BinaryReader(ms, Encoding.UTF8))
                         {
-                            zlib.CopyTo(ms);
-                            ms.Position = 0;
-                            using (BinaryReader decompressedReader = new BinaryReader(ms, Encoding.UTF8))
-                            {
-                                return ReadBinaryData(decompressedReader);
-                            }
+                            return ReadBinaryData(decompressedReader);
                         }
                     }
                 }
-                else
+            }
+            else
+            {
+                // Файл не сжат
+                using (BinaryReader br = new BinaryReader(fs, Encoding.UTF8, leaveOpen: true))
                 {
-                    // Файл не сжат
-                    using (BinaryReader br = new BinaryReader(fs, Encoding.UTF8))
-                    {
-                        return ReadBinaryData(br);
-                    }
+                    return ReadBinaryData(br);
                 }
             }
         }
@@ -65,7 +86,6 @@ namespace KrutolFramework.Core
             br.ReadInt32(); // Пропускаем 0
             br.ReadInt32(); // Пропускаем маркер структуры (0xC)
 
-            // 1. Сначала читаем заголовки треков (количество трансформаций/кадров в каждом)
             var tracksTempData = new (int TransformCount, ReanimTrack Track)[tracksCount];
             for (int i = 0; i < tracksCount; i++)
             {
@@ -74,22 +94,18 @@ namespace KrutolFramework.Core
                 int transformCount = br.ReadInt32();
 
                 var track = new ReanimTrack();
-                // Инициализируем массив трансформаций в вашей структуре трека
                 track.Transforms = new ReanimTransform[transformCount];
 
                 tracksTempData[i] = (transformCount, track);
             }
 
-            // 2. Читаем данные каждого трека последовательно
             for (int i = 0; i < tracksCount; i++)
             {
                 var (transformCount, track) = tracksTempData[i];
 
-                // Читаем имя трека
                 track.Name = ReadStringByInt32Head(br);
                 br.ReadInt32(); // Пропускаем размер блока (0x2C)
 
-                // Читаем числовые матрицы трансформаций (X, Y, KX, KY, SX, SY, F, A)
                 for (int j = 0; j < transformCount; j++)
                 {
                     var ts = new ReanimTransform
@@ -104,32 +120,20 @@ namespace KrutolFramework.Core
                         Alpha = ReadFloatWithNullCheck(br)
                     };
 
-                    br.BaseStream.Position += 12; // Пропускаем 12 пустых байт (3 * int32)
+                    br.BaseStream.Position += 12; // Пропускаем 12 пустых байт
 
                     track.Transforms[j] = ts;
                 }
 
-                // Читаем строковые ресурсы трансформаций (Имя картинки, Шрифт, Текст)
                 for (int j = 0; j < transformCount; j++)
                 {
                     var ts = track.Transforms[j];
-
-                    ts.ImageName = ReadStringByInt32Head(br); // Переменная 'i' в оригинале PopCap
+                    ts.ImageName = ReadStringByInt32Head(br);
                     ts.Font = ReadStringByInt32Head(br);
                     ts.Text = ReadStringByInt32Head(br);
                 }
 
-                // Добавляем готовый трек в определение анимации
                 animDef.Tracks.Add(track);
-            }
-
-            // Опционально: Рассчитываем общее количество кадров в анимации для FrameCount
-            // На основе максимального количества трансформаций среди всех треков
-            int maxFrames = 0;
-            foreach (var track in animDef.Tracks)
-            {
-                if (track.Transforms.Length > maxFrames)
-                    maxFrames = track.Transforms.Length;
             }
 
             return animDef;
@@ -138,7 +142,6 @@ namespace KrutolFramework.Core
         private static float? ReadFloatWithNullCheck(BinaryReader br)
         {
             float val = br.ReadSingle();
-            // Значение -10000.0f в PopCap используется как индикатор отсутствия данных (null)
             return val == -10000f ? null : val;
         }
 

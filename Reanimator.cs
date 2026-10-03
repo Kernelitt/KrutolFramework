@@ -58,7 +58,7 @@ namespace KrutolFramework.Core
         private readonly string _groupName;
 
         public float _animTime = 0f; // от 0.0 до 1.0 внутри активного диапазона
-        private readonly float _animRate = 12f;
+        public float _animRate = 12f;
 
         // ИСПРАВЛЕНО: Индексы теперь динамические и могут настраиваться пользователем
         private int _frameStart = 0;
@@ -73,6 +73,7 @@ namespace KrutolFramework.Core
         public Color4 ColorOverride { get; set; } = Color4.White;
         public ReanimLoopType LoopType { get; set; } = ReanimLoopType.Loop;
         public bool IsDead { get; private set; } = false;
+        public string FrameBoundsName { get; private set; } = "";
         private readonly Dictionary<string, string> _imageOverrides = new(StringComparer.OrdinalIgnoreCase);
         private float _flashTimer = 0f;
         private const float FLASH_DURATION = 0.15f; // Длительность мигания при уроне
@@ -148,7 +149,6 @@ namespace KrutolFramework.Core
                 // 1. Проверяем, является ли имя ТРЕКА маркером анимации
                 if (track.Name.StartsWith("anim_", StringComparison.OrdinalIgnoreCase))
                 {
-                    Console.WriteLine(track.Name);
                     string cleanBoundsName = track.Name.Trim().ToLower();
                     int startFrame = -1;
                     int endFrame = -1;
@@ -194,8 +194,6 @@ namespace KrutolFramework.Core
                         {
                             _namedAnimationBounds[cleanBoundsName] = new Vector2i(startFrame, endFrame);
                         }
-
-                        Console.WriteLine($"[Reanimation] Успешно зарегистрирован трек-маркер '{cleanBoundsName}': кадры {startFrame} - {endFrame}");
                     }
                 }
             }
@@ -212,14 +210,18 @@ namespace KrutolFramework.Core
             if (_namedAnimationBounds.TryGetValue(animationName, out Vector2i bounds))
             {
                 SetFrameBounds(bounds.X, bounds.Y);
+                // ИСПРАВЛЕНО: Сохраняем имя успешной анимации
+                FrameBoundsName = animationName;
             }
             else
             {
                 Console.WriteLine($"[Reanimation Error] Не удалось найти маркер анимации с именем '{animationName}'!");
                 // Запасной безопасный вариант — сбросить на полную длину
                 SetFrameBounds(0, _definition.FrameCount - 1);
+                FrameBoundsName = "";
             }
         }
+
         public void SetStaticFrame(string animationName, bool isLast)
         {
             if (_namedAnimationBounds.TryGetValue(animationName, out Vector2i bounds))
@@ -242,7 +244,7 @@ namespace KrutolFramework.Core
         }
 
         public void TriggerDamageFlash() => _flashTimer = FLASH_DURATION;
-        
+
         /// <summary>
         /// Устанавливает начальный и конечный кадры для проигрывания конкретного участка анимации.
         /// </summary>
@@ -256,7 +258,11 @@ namespace KrutolFramework.Core
             _frameStart = startFrame;
             _frameEnd = endFrame;
             _animTime = 0f; // Сбрасываем время на начало нового участка
+
+            // ДОБАВИТЬ СТРОКУ НИЖЕ: сбрасываем именованный маркер, так как запуск идет по чистым индексам
+            FrameBoundsName = "";
         }
+
 
         /// <summary>
         /// Полностью включает или выключает отрисовку конкретного трека по его названию.
@@ -566,34 +572,49 @@ namespace KrutolFramework.Core
 
     public static class ReanimParser
     {
+        // Старый метод для обратной совместимости (чтение с диска)
         public static ReanimDefinition ParseXml(string filePath)
+        {
+            using (var stream = File.OpenRead(filePath))
+            {
+                return ParseXml(stream);
+            }
+        }
+
+        // НОВЫЙ МЕТОД: Чтение XML-анимации PopCap напрямую из потока архива
+        public static ReanimDefinition ParseXml(Stream stream)
         {
             var def = new ReanimDefinition();
             var doc = new XmlDocument();
 
-            string rawXml = File.ReadAllText(filePath);
+            // Читаем raw текст из стрима
+            using var reader = new StreamReader(stream, System.Text.Encoding.UTF8);
+            string rawXml = reader.ReadToEnd();
+
+            // Заворачиваем в корневой тег для валидности
             string validXml = $"<reanim_file>{rawXml}</reanim_file>";
             doc.LoadXml(validXml);
 
-            XmlNode root = doc.SelectSingleNode("reanim_file");
+            XmlNode? root = doc.SelectSingleNode("reanim_file");
+            if (root == null) return def;
 
-            XmlNode fpsNode = root.SelectSingleNode("fps");
+            XmlNode? fpsNode = root.SelectSingleNode("fps");
             if (fpsNode != null)
             {
                 float.TryParse(fpsNode.InnerText, NumberStyles.Float, CultureInfo.InvariantCulture, out float fps);
                 def.FPS = fps;
             }
 
-            XmlNodeList trackNodes = root.SelectNodes("track");
+            XmlNodeList? trackNodes = root.SelectNodes("track");
             if (trackNodes != null)
             {
                 foreach (XmlNode trackNode in trackNodes)
                 {
                     var track = new ReanimTrack();
-                    XmlNode nameNode = trackNode.SelectSingleNode("name");
+                    XmlNode? nameNode = trackNode.SelectSingleNode("name");
                     track.Name = nameNode != null ? nameNode.InnerText.Trim() : "unknown_track";
 
-                    XmlNodeList transformNodes = trackNode.SelectNodes("t");
+                    XmlNodeList? transformNodes = trackNode.SelectNodes("t");
                     if (transformNodes != null)
                     {
                         var transformsList = new List<ReanimTransform>();
@@ -626,10 +647,9 @@ namespace KrutolFramework.Core
             return def;
         }
 
-        // ИСПРАВЛЕНО: Метод теперь возвращает float? (null при отсутствии тега)
         private static float? ReadFloatChild(XmlNode parentNode, string childName)
         {
-            XmlNode child = parentNode.SelectSingleNode(childName);
+            XmlNode? child = parentNode.SelectSingleNode(childName);
             if (child == null) return null;
 
             if (float.TryParse(child.InnerText, NumberStyles.Float, CultureInfo.InvariantCulture, out float result))

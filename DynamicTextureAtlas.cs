@@ -158,6 +158,52 @@ namespace KrutolFramework.Core
             _regions[name] = region;
             return region;
         }
+        public TextureRegion RegisterTexture(string name, Stream imageStream, bool keepLocalPixels = false)
+        {
+            if (_regions.TryGetValue(name, out var existing))
+                return existing;
+
+            ImageResult image = ImageResult.FromStream(imageStream, ColorComponents.RedGreenBlueAlpha);
+
+            if (image.Width > LayerSize || image.Height > LayerSize)
+                throw new ArgumentException($"Текстура {name} слишком велика!");
+
+            EnsureSpace(image.Width, image.Height);
+
+            int activeTextureHandle = _atlasPages[_currentPageIndex];
+
+            // DSA передача текстуры на GPU
+            GL.TextureSubImage3D(
+                activeTextureHandle,
+                0,
+                _currentX, _currentY, _currentLayerIndex,
+                image.Width, image.Height, 1,
+                PixelFormat.Rgba,
+                PixelType.UnsignedByte,
+                image.Data
+            );
+
+            float texelOffset = 0.5f;
+
+            var region = new TextureRegion
+            {
+                AtlasTextureHandle = activeTextureHandle,
+                Layer = _currentLayerIndex,
+                Width = image.Width,
+                Height = image.Height,
+                U1 = (_currentX + texelOffset) / LayerSize,
+                V1 = (_currentY + texelOffset) / LayerSize,
+                U2 = ((_currentX + image.Width) - texelOffset) / LayerSize,
+                V2 = ((_currentY + image.Height) - texelOffset) / LayerSize,
+                RawRgbaData = keepLocalPixels ? image.Data : null
+            };
+
+            _currentX += image.Width + _padding;
+            if (image.Height > _maxRowHeight) _maxRowHeight = image.Height;
+
+            _regions[name] = region;
+            return region;
+        }
 
         public TextureRegion RegisterRawPixels(string key, int width, int height, byte[] rgbaData)
         {
@@ -177,8 +223,6 @@ namespace KrutolFramework.Core
                 PixelType.UnsignedByte,
                 rgbaData
             );
-
-
 
             var region = new TextureRegion
             {

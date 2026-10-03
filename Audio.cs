@@ -7,68 +7,75 @@ namespace KrutolFramework.Core
 {
     public static class WavLoader
     {
-        public static byte[] LoadWav(string filePath, out ALFormat format, out int sampleRate)
-        {
-            if (!File.Exists(filePath))
-                throw new FileNotFoundException($"Аудиофайл не найден: {filePath}");
-
-            using var stream = File.OpenRead(filePath);
-            using var reader = new BinaryReader(stream);
-
-            // RIFF chunk
-            if (new string(reader.ReadChars(4)) != "RIFF")
-                throw new NotSupportedException("Неверный формат файла (ожидался RIFF).");
-
-            reader.ReadInt32(); // Размер файла минус 8 байт
-
-            if (new string(reader.ReadChars(4)) != "WAVE")
-                throw new NotSupportedException("Неверный формат медиа (ожидался WAVE).");
-
-            // fmt chunk
-            if (new string(reader.ReadChars(4)) != "fmt ")
-                throw new NotSupportedException("Неверный субчанк (ожидался fmt ).");
-
-            int fmtChunkSize = reader.ReadInt32();
-            int audioFormat = reader.ReadInt16(); // 1 для PCM
-            int channels = reader.ReadInt16();
-            sampleRate = reader.ReadInt32();
-            reader.ReadInt32(); // byteRate
-            reader.ReadInt16(); // blockAlign
-            int bitsPerSample = reader.ReadInt16();
-
-            // Пропускаем оставшиеся байты fmt, если они есть
-            if (fmtChunkSize > 16)
-                stream.Position += (fmtChunkSize - 16);
-
-            // Ищем chunk "data" (пропуская метаданные LIST и т.д.)
-            string dataChunkHeader = new string(reader.ReadChars(4));
-            while (dataChunkHeader != "data" && stream.Position < stream.Length)
+            // Старый метод для обратной совместимости (чтение с диска)
+            public static byte[] LoadWav(string filePath, out ALFormat format, out int sampleRate)
             {
-                int size = reader.ReadInt32();
-                stream.Position += size;
-                if (stream.Position >= stream.Length) break;
-                dataChunkHeader = new string(reader.ReadChars(4));
+                if (!File.Exists(filePath))
+                    throw new FileNotFoundException($"Аудиофайл не найден: {filePath}");
+
+                using var stream = File.OpenRead(filePath);
+                return LoadWav(stream, out format, out sampleRate);
             }
 
-            if (dataChunkHeader != "data")
-                throw new Exception("Не найден аудио-дата чанк в WAV файле.");
-
-            int dataSize = reader.ReadInt32();
-            byte[] audioData = reader.ReadBytes(dataSize);
-
-            // Определяем OpenAL формат
-            format = channels switch
+            // НОВЫЙ МЕТОД: Чтение аудио прямо из потока архива (без файлов на диске)
+            public static byte[] LoadWav(Stream stream, out ALFormat format, out int sampleRate)
             {
-                1 => bitsPerSample == 8 ? ALFormat.Mono8 : ALFormat.Mono16,
-                2 => bitsPerSample == 8 ? ALFormat.Stereo8 : ALFormat.Stereo16,
-                _ => throw new NotSupportedException($"Количество каналов ({channels}) не поддерживается.")
-            };
+                using var reader = new BinaryReader(stream, System.Text.Encoding.UTF8, leaveOpen: true);
 
-            return audioData;
+                // RIFF chunk
+                if (new string(reader.ReadChars(4)) != "RIFF")
+                    throw new NotSupportedException("Неверный формат файла (ожидался RIFF).");
+
+                reader.ReadInt32(); // Размер файла минус 8 байт
+
+                if (new string(reader.ReadChars(4)) != "WAVE")
+                    throw new NotSupportedException("Неверный формат медиа (ожидался WAVE).");
+
+                // fmt chunk
+                if (new string(reader.ReadChars(4)) != "fmt ")
+                    throw new NotSupportedException("Неверный субчанк (ожидался fmt ).");
+
+                int fmtChunkSize = reader.ReadInt32();
+                int audioFormat = reader.ReadInt16(); // 1 для PCM
+                int channels = reader.ReadInt16();
+                sampleRate = reader.ReadInt32();
+                reader.ReadInt32(); // byteRate
+                reader.ReadInt16(); // blockAlign
+                int bitsPerSample = reader.ReadInt16();
+
+                // Пропускаем оставшиеся байты fmt, если они есть
+                if (fmtChunkSize > 16)
+                    stream.Position += (fmtChunkSize - 16);
+
+                // Ищем chunk "data" (пропуская метаданные LIST и т.д.)
+                string dataChunkHeader = new string(reader.ReadChars(4));
+                while (dataChunkHeader != "data" && stream.Position < stream.Length)
+                {
+                    int size = reader.ReadInt32();
+                    stream.Position += size;
+                    if (stream.Position >= stream.Length) break;
+                    dataChunkHeader = new string(reader.ReadChars(4));
+                }
+
+                if (dataChunkHeader != "data")
+                    throw new Exception("Не найден аудио-дата чанк в WAV файле.");
+
+                int dataSize = reader.ReadInt32();
+                byte[] audioData = reader.ReadBytes(dataSize);
+
+                // Определяем OpenAL формат
+                format = channels switch
+                {
+                    1 => bitsPerSample == 8 ? ALFormat.Mono8 : ALFormat.Mono16,
+                    2 => bitsPerSample == 8 ? ALFormat.Stereo8 : ALFormat.Stereo16,
+                    _ => throw new NotSupportedException($"Количество каналов ({channels}) не поддерживается.")
+                };
+
+                return audioData;
+            }
         }
-    }
 
-    public static class AudioManager
+        public static class AudioManager
     {
         private static ALDevice _device;
         private static ALContext _context;
