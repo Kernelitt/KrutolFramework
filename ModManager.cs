@@ -1,7 +1,4 @@
-﻿
-using System;
-using System.Collections.Generic;
-using System.IO;
+﻿using OpenTK.Windowing.Desktop;
 using System.Reflection;
 using System.Text.Json;
 
@@ -16,21 +13,33 @@ namespace KrutolFramework.Core
         public string AssemblyName { get; set; }
     }
 
-    public static class ModManager
-    {
-        private static readonly Dictionary<string, string> ModDirectories = [];
-        public static List<ModManifest> LoadedMods { get; } = [];
+        public static class ModManager
+        {
+            private static readonly Dictionary<string, string> ModDirectories = [];
+            public static List<ModManifest> LoadedMods { get; } = [];
 
-        public static void InitAndLoadMods(string modsRootPath)
+            // События жизненного цикла
+            public static event Action<float> OnUpdate;
+            public static event Action OnRender;
+            public static event Action<int, int> OnResize;
+
+            // Триггеры, которые будет вызывать игра
+            public static void TriggerUpdate(float dt) => OnUpdate?.Invoke(dt);
+            public static void TriggerRender() => OnRender?.Invoke();
+            public static void TriggerResize(int width, int height) => OnResize?.Invoke(width, height);
+
+        // Изменяем Init: теперь мы передаем ссылку на саму запущенную игру
+        public static void InitAndLoadMods(string modsRootPath, GameWindow gameWindow)
         {
             if (!Directory.Exists(modsRootPath))
                 Directory.CreateDirectory(modsRootPath);
 
             AppDomain.CurrentDomain.AssemblyResolve += OnAssemblyResolve;
 
-            string[] modFolders = Directory.GetDirectories(modsRootPath);
+            // Сохраняем или передаем контекст окна в моды, если нужно. 
+            // Но проще передавать его через рефлексию/параметр в метод Init мода.
 
-            // Настройки десериализации (нечувствительность к регистру букв JSON)
+            string[] modFolders = Directory.GetDirectories(modsRootPath);
             var jsonOptions = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
 
             foreach (string modFolder in modFolders)
@@ -42,30 +51,26 @@ namespace KrutolFramework.Core
                 {
                     string json = File.ReadAllText(manifestPath);
                     ModManifest manifest = JsonSerializer.Deserialize<ModManifest>(json, jsonOptions);
-
                     if (manifest == null) continue;
 
                     string mainDllPath = Path.Combine(modFolder, manifest.AssemblyName);
-                    if (!File.Exists(mainDllPath))
-                    {
-                        Console.WriteLine($"[Error] Исполняемый файл {manifest.AssemblyName} не найден для мода {manifest.Name}");
-                        continue;
-                    }
+                    if (!File.Exists(mainDllPath)) continue;
 
                     string assemblyNameWithoutExt = Path.GetFileNameWithoutExtension(manifest.AssemblyName);
                     ModDirectories[assemblyNameWithoutExt] = modFolder;
 
-                    // Загружаем сборку в контекст приложения
                     Assembly asm = Assembly.LoadFrom(mainDllPath);
 
                     bool initFound = false;
                     foreach (Type type in asm.GetTypes())
                     {
-                        // Ищем метод public static void Init()
-                        MethodInfo initMethod = type.GetMethod("Init", BindingFlags.Public | BindingFlags.Static);
+                        // ИСПРАВЛЕНО: Теперь ищем Init(GameWindow window) вместо Init() без параметров
+                        MethodInfo initMethod = type.GetMethod("Init", BindingFlags.Public | BindingFlags.Static, null, new Type[] { typeof(GameWindow) }, null);
+
                         if (initMethod != null)
                         {
-                            initMethod.Invoke(null, null);
+                            // Передаем экземпляр игры прямо в мод!
+                            initMethod.Invoke(null, new object[] { gameWindow });
                             initFound = true;
                             Console.WriteLine($"[Mods] Мод '{manifest.Name}' v{manifest.Version} успешно загружен.");
                             LoadedMods.Add(manifest);
@@ -75,12 +80,21 @@ namespace KrutolFramework.Core
 
                     if (!initFound)
                     {
-                        Console.WriteLine($"[Warning] Мод '{manifest.Name}' загружен, но static void Init() не найден.");
+                        Console.WriteLine($"[Warning] Мод '{manifest.Name}' не смог инициализироваться. Проверьте сигнатуру static void Init(GameWindow window).");
                     }
                 }
                 catch (Exception ex)
                 {
-                    Console.WriteLine($"[Error] Ошибка при загрузке мода из {modFolder}: {ex.Message}");
+                    // Если ошибка произошла внутри вызванного метода, выводим InnerException
+                    if (ex is TargetInvocationException && ex.InnerException != null)
+                    {
+                        Console.WriteLine($"[Error] КРИТИЧЕСКАЯ ОШИБКА ВНУТРИ МОДА : {ex.InnerException.Message}");
+                        Console.WriteLine($"[Stack Trace]: {ex.InnerException.StackTrace}");
+                    }
+                    else
+                    {
+                        Console.WriteLine($"[Error] Ошибка при загрузке мода из {modFolder}: {ex.Message}");
+                    }
                 }
             }
         }
@@ -90,6 +104,7 @@ namespace KrutolFramework.Core
             var requestingName = new AssemblyName(args.Name);
             string shortName = requestingName.Name;
 
+            // 1. Ищем в папке того мода, который запросил зависимость
             Assembly requestingAssembly = args.RequestingAssembly;
             string modFolder = null;
 
@@ -104,6 +119,17 @@ namespace KrutolFramework.Core
                 if (File.Exists(dependencyPath)) return Assembly.LoadFrom(dependencyPath);
             }
 
+            // 2. ДОБАВЛЕНО: Ищем в корневой папке самой игры (AppDomain.CurrentDomain.BaseDirectory)
+            // Это позволит модам мгновенно подхватывать OpenTK, KrutolFramework и саму PVZRemake.dll
+            string gameRootPath = AppDomain.CurrentDomain.BaseDirectory;
+            string gameDependencyPath = Path.Combine(gameRootPath, shortName + ".dll");
+
+            if (File.Exists(gameDependencyPath))
+            {
+                return Assembly.LoadFrom(gameDependencyPath);
+            }
+
+            // 3. Если не нашли в корне игры, проверяем папки других модов (на случай общих библиотек между модами)
             foreach (string folder in ModDirectories.Values)
             {
                 string dependencyPath = Path.Combine(folder, shortName + ".dll");
@@ -112,6 +138,7 @@ namespace KrutolFramework.Core
 
             return null;
         }
+
     }
 }
 
