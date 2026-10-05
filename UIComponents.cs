@@ -309,7 +309,7 @@ namespace KrutolFramework.Core
             // Классический Backspace
             if (Input.IsKeyDown(Keys.Backspace) && Text.Length > 0)
             {
-                Text = Text.Substring(0, Text.Length - 1);
+                Text = Text[..^1];
             }
 
             List<char> pressedChars = Input.GetFrameTextInput();

@@ -10,22 +10,16 @@ using System.Xml;
 
 namespace KrutolFramework.Core
 {
-    public struct DefLoadResPath
+    public struct DefLoadResPath(string prefix, string directory)
     {
-        public string Prefix;
-        public string Directory;
-
-        public DefLoadResPath(string prefix, string directory)
-        {
-            Prefix = prefix;
-            Directory = directory;
-        }
+        public string Prefix = prefix;
+        public string Directory = directory;
     }
 
-    public class AssetGroup : IDisposable
+    public class AssetGroup(string name, int atlasSize = 2048, int layersPerPage = 2) : IDisposable
     {
-        public string Name { get; private set; }
-        public DynamicTextureAtlas Atlas { get; private set; }
+        public string Name { get; private set; } = name;
+        public DynamicTextureAtlas Atlas { get; private set; } = new DynamicTextureAtlas(atlasSize, layersPerPage);
 
         private readonly Dictionary<string, FontRenderer> _fonts = [];
         private readonly Dictionary<string, ReanimDefinition> _animations = [];
@@ -33,16 +27,10 @@ namespace KrutolFramework.Core
         private readonly Dictionary<string, int> _audioBuffers = [];
         private readonly HashSet<string> _registeredTextures = [];
         private readonly HashSet<string> _registeredParticles = [];
-        private readonly HashSet<string> _registeredAnimations = new();
-
-        public AssetGroup(string name, int atlasSize = 2048, int layersPerPage = 2)
-        {
-            Name = name;
-            Atlas = new DynamicTextureAtlas(atlasSize, layersPerPage);
-        }
+        private readonly HashSet<string> _registeredAnimations = [];
 
         // Вспомогательный метод для получения потока данных (диск или Zip)
-        private Stream OpenAssetStream(string filePath)
+        private static Stream OpenAssetStream(string filePath)
         {
             if (AssetManager.IsZipMode)
             {
@@ -84,9 +72,6 @@ namespace KrutolFramework.Core
 
             if (AssetManager.IsZipMode)
             {
-                // Проверяем, существует ли файл в кэше ZIP-архива
-                // Корректно стыкуем RootPath и путь к шрифту под стандарты ZIP
-                string fullZipPath = Path.Combine(AssetManager.RootPath, fontPathOrName).Replace('/', '\\');
 
                 // Передаем логику проверки в метод архива
                 IEnumerable<string> foundFiles = AssetManager.EnumerateZipFiles("", [Path.GetFileName(fontPathOrName).ToLower()]);
@@ -128,35 +113,6 @@ namespace KrutolFramework.Core
             return font;
         }
 
-
-        public int LoadAudio(string assetName, string filePath)
-        {
-            string key = $"{Name}/{assetName}";
-            if (_audioBuffers.TryGetValue(key, out var existingBuffer)) return existingBuffer;
-
-            byte[] data;
-            ALFormat format;
-            int sampleRate;
-
-            if (AssetManager.IsZipMode)
-            {
-                using var stream = OpenAssetStream(filePath);
-                data = WavLoader.LoadWav(stream, out format, out sampleRate); // Требуется перегрузка LoadWav(Stream)
-            }
-            else
-            {
-                if (!File.Exists(filePath))
-                    throw new FileNotFoundException($"Аудиофайл не найден: {filePath}");
-                data = WavLoader.LoadWav(filePath, out format, out sampleRate);
-            }
-
-            int bufferId = AL.GenBuffer();
-            AL.BufferData(bufferId, format, data, sampleRate);
-
-            _audioBuffers[key] = bufferId;
-            return bufferId;
-        }
-
         public ReanimDefinition LoadAnimation(string animName, string filePath)
         {
             if (_animations.TryGetValue(animName, out var existingAnim)) return existingAnim;
@@ -194,6 +150,49 @@ namespace KrutolFramework.Core
             return animDef;
         }
 
+        public int LoadAudio(string assetName, string filePath)
+        {
+            // Приводим ключ к единому стандарту (например, "SOUND_CHERRYBOMB")
+            string key = assetName.ToUpper();
+
+            // Если этот аудиоресурс уже загружен в этой группе, просто возвращаем его ID буфера
+            if (_audioBuffers.TryGetValue(key, out var existingBuffer))
+                return existingBuffer;
+
+            byte[] data;
+            ALFormat format;
+            int sampleRate;
+
+            bool isOgg = filePath.EndsWith(".ogg", StringComparison.OrdinalIgnoreCase);
+
+            // 1. Чтение файла в поток (из ZIP-архива или напрямую с диска)
+            if (AssetManager.IsZipMode)
+            {
+                using var stream = OpenAssetStream(filePath);
+                data = OggLoader.LoadOgg(stream, out format, out sampleRate);
+
+            }
+            else
+            {
+                string fullDiskPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, AssetManager.RootPath, filePath);
+                if (!File.Exists(fullDiskPath))
+                    throw new FileNotFoundException($"Аудиофайл не найден по пути: {fullDiskPath}");
+
+                using var stream = File.OpenRead(fullDiskPath);
+                data = OggLoader.LoadOgg(stream, out format, out sampleRate);
+            }
+
+            // 2. Создаем OpenAL буфер и загружаем туда чистые PCM данные
+            int bufferId = AL.GenBuffer();
+
+            // ВАЖНО для OpenTK 4.x: передаем ref data[0], то есть точный адрес первого физического байта в памяти
+            AL.BufferData(bufferId, format, ref data[0], data.Length, sampleRate);
+
+            // Сохраняем ID буфера во внутреннем словаре группы ассетов
+            _audioBuffers[key] = bufferId;
+
+            return bufferId;
+        }
         public void DiscoverAndLoadTextures(string relativeFolder, bool keepLocalPixels = false)
         {
             IEnumerable<string> files;
@@ -301,31 +300,67 @@ namespace KrutolFramework.Core
         }
         public void DiscoverAndLoadAudio(string relativeFolder)
         {
-            IEnumerable files;
+            IEnumerable<string> files;
             if (AssetManager.IsZipMode)
             {
-                files = AssetManager.EnumerateZipFiles(relativeFolder, [".wav"]);
+                files = AssetManager.EnumerateZipFiles(relativeFolder, [".wav", ".ogg", ".mo3"]);
             }
             else
             {
                 string rootFullPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, AssetManager.RootPath);
                 string fullFolderPath = Path.Combine(rootFullPath, relativeFolder);
                 if (!Directory.Exists(fullFolderPath)) return;
-                files = Directory.GetFiles(fullFolderPath, "*.wav", SearchOption.AllDirectories);
+
+                files = Directory.EnumerateFiles(fullFolderPath, "*.*", SearchOption.AllDirectories)
+                    .Where(file => file.EndsWith(".wav", StringComparison.OrdinalIgnoreCase) ||
+                                   file.EndsWith(".ogg", StringComparison.OrdinalIgnoreCase) ||
+                                   file.EndsWith(".mo3", StringComparison.OrdinalIgnoreCase));
             }
+
             foreach (string file in files)
             {
                 string relative = AssetManager.IsZipMode ? file : Path.GetRelativePath(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, AssetManager.RootPath), file);
+
                 string prefix = relative.Contains("music", StringComparison.OrdinalIgnoreCase) ? "MUSIC_" : "SOUND_";
                 string assetId = prefix + Path.GetFileNameWithoutExtension(relative).ToUpper();
+
                 try
                 {
-                    int bufferId = LoadAudio(assetId, file);
-                    _audioBuffers[assetId] = bufferId;
+                    // Считываем файл в массив байт (из архива или с диска)
+                    byte[] audioData;
+                    if (AssetManager.IsZipMode)
+                    {
+                        using var stream = OpenAssetStream(file);
+                        using var ms = new MemoryStream();
+                        stream.CopyTo(ms);
+                        audioData = ms.ToArray();
+                    }
+                    else
+                    {
+                        string fullDiskPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, AssetManager.RootPath, file);
+                        audioData = File.ReadAllBytes(fullDiskPath);
+                    }
+
+                    if (file.EndsWith(".mo3", StringComparison.OrdinalIgnoreCase))
+                    {
+                        // Загружаем трекерную музыку в BASS
+                        AudioManager.RegisterMusicTrack(assetId, audioData);
+                        Console.WriteLine($"[AssetManager] Трекерная музыка {assetId} (.mo3) успешно загружена в BASS.");
+                    }
+                    else
+                    {
+                        // Загружаем звуковой эффект (.ogg/.wav) напрямую в сэмплы BASS!
+                        int bufferId = LoadAudio(assetId, file);
+                        Console.WriteLine($"[AssetManager] Аудиоэффект {assetId} успешно загружен в коллекцию сэмплов BASS.");
+                    }
                 }
-                catch (Exception ex) { Console.WriteLine($"[AssetManager] Ошибка аудио {assetId}: {ex.Message}"); }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[AssetManager] Ошибка загрузки аудио {assetId}: {ex.Message}");
+                }
             }
         }
+
         public ParticleSystemDefinition LoadParticleSystem(string sysName, string filePath)
         {
             var sysDef = new ParticleSystemDefinition();
@@ -348,6 +383,8 @@ namespace KrutolFramework.Core
             XmlNode? doc = root.SelectSingleNode("particle_file");
             if (doc == null) return sysDef;
             XmlNodeList? emitterNodes = doc.SelectNodes("Emitter");
+
+            if (emitterNodes == null) return sysDef;
             foreach (XmlNode node in emitterNodes)
             {
                 var eDef = new EmitterDefinition
@@ -504,11 +541,6 @@ namespace KrutolFramework.Core
             _particles[sysName] = sysDef;
             return sysDef;
         }
-        public int GetAudio(string audioId)
-        {
-            if (_audioBuffers.TryGetValue(audioId.ToUpper(), out int id)) return id;
-            return 0;
-        }
         public ReanimDefinition GetAnimation(string animName)
         {
             if (_animations.TryGetValue(animName, out var anim)) return anim;
@@ -524,6 +556,15 @@ namespace KrutolFramework.Core
             string key = $"{fontName}{fontSize}";
             if (_fonts.TryGetValue(key, out var font)) return font;
             throw new KeyNotFoundException($"Шрифт '{fontName}' {fontSize}px не найден в группе '{Name}'.");
+        }
+        public int GetAudio(string audioId)
+        {
+            string key = audioId.ToUpper();
+            if (_audioBuffers.TryGetValue(key, out int id))
+                return id;
+
+            Console.WriteLine($"[AssetGroup] Предупреждение: Аудио-буфер '{key}' не найден в группе '{Name}'!");
+            return 0;
         }
         public void Dispose()
         {
@@ -545,10 +586,9 @@ namespace KrutolFramework.Core
     }
     public static class AssetManager
     {
-        private static readonly Dictionary<string, AssetGroup> _groups = new();
+        private static readonly Dictionary<string, AssetGroup> _groups = [];
         public static string RootPath { get; set; } = "";
-        public static AssetGroup Active;
-        // Новые поля для ZipArchive
+        public static AssetGroup Active = new("Empty");
         private static ZipArchive? _zipArchive;
         private static List<string> _zipFilePaths = [];
         public static bool IsZipMode => _zipArchive != null;
@@ -574,13 +614,8 @@ namespace KrutolFramework.Core
                 _zipFilePaths.Clear();
             }
             if (string.IsNullOrEmpty(zipPath) || !File.Exists(zipPath)) return;
-            // Открываем архив один раз в режиме Read.
-            // Обратите внимание: объект _zipArchive должен жить всё время работы игры.
             _zipArchive = ZipFile.OpenRead(zipPath);
-            // Кэшируем нормализованные пути всех файлов внутри архива для быстрого поиска
-            _zipFilePaths = _zipArchive.Entries
-            .Select(e => e.FullName.Replace('/', '\\'))
-            .ToList();
+            _zipFilePaths = [.. _zipArchive.Entries.Select(e => e.FullName.Replace('/', '\\'))];
             Console.WriteLine($"[AssetManager] Успешно загружен игровой архив '{zipPath}'. Индексировано файлов: {_zipFilePaths.Count}");
         }
         // Поиск файлов в кэше ZIP-архива по виртуальной папке и расширениям
@@ -607,11 +642,8 @@ namespace KrutolFramework.Core
             // Заменяем слеши под формат ZipArchive
             string entryKey = zipEntryPath.Replace('\\', '/');
             var entry = _zipArchive?.GetEntry(entryKey);
-            if (entry == null)
-            {
-                // Попробуем найти без учета регистра на случай несовпадений
-                entry = _zipArchive?.Entries.FirstOrDefault(e => e.FullName.Equals(entryKey, StringComparison.OrdinalIgnoreCase));
-            }
+            // Попробуем найти без учета регистра на случай несовпадений
+            entry ??= _zipArchive?.Entries.FirstOrDefault(e => e.FullName.Equals(entryKey, StringComparison.OrdinalIgnoreCase));
             if (entry == null) throw new FileNotFoundException($"Ресурс не найден в архиве: {zipEntryPath}");
 
             // ВАЖНОЕ ИСПРАВЛЕНИЕ: Читаем данные из Zip, но заворачиваем их в MemoryStream,
@@ -714,17 +746,17 @@ namespace KrutolFramework.Core
             return finalId;
         }
 
-        public static TextureRegion? GetTexture(string assetName)
+        public static TextureRegion GetTexture(string assetName)
         {
-            if (assetName == null) return null;
+            if (assetName == null) return new TextureRegion();
             string cleanAssetName = assetName.Replace(" ", "").ToUpper();
-            if (!cleanAssetName.StartsWith("IMAGE_") && Active != null) cleanAssetName = "IMAGE_REANIM_" + cleanAssetName;
-            return Active?.Atlas.GetRegion($"{Active.Name}/{cleanAssetName}");
+            if (!cleanAssetName.StartsWith("IMAGE_") && AssetManager.Active != null) cleanAssetName = "IMAGE_REANIM_" + cleanAssetName;
+            return AssetManager.Active.Atlas.GetRegion($"{AssetManager.Active.Name}/{cleanAssetName}");
         }
-        public static ParticleSystemDefinition? GetParticle(string particleName) => Active?.GetParticle(particleName);
-        public static ReanimDefinition? GetAnimation(string animName) => Active?.GetAnimation(animName);
-        public static FontRenderer? GetFont(string fontName, int fontSize) => Active?.GetFont(fontName, fontSize);
-        public static int GetAudio(string assetName) => Active != null ? Active.GetAudio(assetName) : 0;
+        public static ParticleSystemDefinition GetParticle(string particleName) => AssetManager.Active.GetParticle(particleName);
+        public static ReanimDefinition GetAnimation(string animName) => AssetManager.Active.GetAnimation(animName);
+        public static int GetAudio(string soundName) => AssetManager.Active.GetAudio(soundName);
+        public static FontRenderer GetFont(string fontName, int fontSize) => AssetManager.Active.GetFont(fontName, fontSize);
         public static void UnloadAll()
         {
             foreach (var group in _groups.Values) group.Dispose();

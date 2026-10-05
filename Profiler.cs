@@ -1,6 +1,4 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Diagnostics;
+﻿using System.Diagnostics;
 
 namespace KrutolFramework.Core
 {
@@ -48,6 +46,20 @@ namespace KrutolFramework.Core
             {
                 Console.WriteLine($"[{kvp.Key}]: {kvp.Value:F3} ms");
             }
+        }
+
+        public static string[] GetResults()
+        {
+            string[] results = [];
+
+            _ = results.Append("=== FRAME PERFORMANCE PROFILER ===");
+
+            foreach (var kvp in _results)
+            {
+                _ = results.Append($"[{kvp.Key}]: {kvp.Value:F3} ms");
+            }
+
+            return results;
         }
     }
 }

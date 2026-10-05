@@ -33,13 +33,13 @@ namespace KrutolFramework.Core
                 if (line.StartsWith("//") || string.IsNullOrEmpty(line)) continue;
 
                 // Поиск тегов [IDENTIFIER]
-                if (line.StartsWith("[") && line.EndsWith("]"))
+                if (line.StartsWith('[') && line.EndsWith(']'))
                 {
                     if (!string.IsNullOrEmpty(currentKey))
                     {
                         _strings[currentKey] = currentText.Trim().Replace("\\n", "\n");
                     }
-                    currentKey = line.Substring(1, line.Length - 2);
+                    currentKey = line[1..^1];
                     currentText = "";
                 }
                 else
@@ -68,7 +68,5 @@ namespace KrutolFramework.Core
             if (_strings.TryGetValue(key, out string text)) return text;
             return string.IsNullOrEmpty(defaultValue) ? $"[{key}]" : defaultValue;
         }
-
-        public static string _T(string key) => Translate(key);
     }
 }

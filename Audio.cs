@@ -1,120 +1,176 @@
-﻿using System;
-using System.IO;
+﻿using ManagedBass;
 using OpenTK.Audio.OpenAL;
+using System;
 using System.Collections.Generic;
+using System.IO;
+using System.Runtime.InteropServices;
 
 namespace KrutolFramework.Core
 {
-    public static class WavLoader
+    // Вспомогательный класс для хранения декодированных PCM данных
+    public class PcmAudioData(byte[] data, ALFormat channels, int sampleRate)
     {
-            // Старый метод для обратной совместимости (чтение с диска)
-            public static byte[] LoadWav(string filePath, out ALFormat format, out int sampleRate)
+        public byte[] Data = data;
+        public ALFormat Channels = channels;
+        public int SampleRate = sampleRate;
+    }
+    public static class OggLoader
+    {
+        public static byte[] LoadOgg(Stream stream, out ALFormat format, out int sampleRate)
+        {
+            // ЖЕЛЕЗОБЕТОННЫЙ ФИКС: Сбрасываем позицию потока в 0, 
+            // на случай если AssetManager уже читал его или проверял заголовки
+            if (stream.CanSeek)
             {
-                if (!File.Exists(filePath))
-                    throw new FileNotFoundException($"Аудиофайл не найден: {filePath}");
-
-                using var stream = File.OpenRead(filePath);
-                return LoadWav(stream, out format, out sampleRate);
+                stream.Position = 0;
             }
 
-            // НОВЫЙ МЕТОД: Чтение аудио прямо из потока архива (без файлов на диске)
-            public static byte[] LoadWav(Stream stream, out ALFormat format, out int sampleRate)
+            // Инициализируем VorbisReader
+            using var reader = new NVorbis.VorbisReader(stream);
+
+            sampleRate = reader.SampleRate;
+            format = reader.Channels == 2 ? ALFormat.Stereo16 : ALFormat.Mono16;
+
+            // Используем динамический список для байт, чтобы не зависеть от свойств TotalSamples
+            var outputBytes = new List<byte>();
+
+            // Буфер для чтения float-сэмплов блоками (например, по 4096 элементов)
+            float[] readBuffer = new float[4096];
+            int samplesRead;
+
+            // Читаем файл блоками до тех пор, пока есть данные
+            while ((samplesRead = reader.ReadSamples(readBuffer, 0, readBuffer.Length)) > 0)
             {
-                using var reader = new BinaryReader(stream, System.Text.Encoding.UTF8, leaveOpen: true);
-
-                // RIFF chunk
-                if (new string(reader.ReadChars(4)) != "RIFF")
-                    throw new NotSupportedException("Неверный формат файла (ожидался RIFF).");
-
-                reader.ReadInt32(); // Размер файла минус 8 байт
-
-                if (new string(reader.ReadChars(4)) != "WAVE")
-                    throw new NotSupportedException("Неверный формат медиа (ожидался WAVE).");
-
-                // fmt chunk
-                if (new string(reader.ReadChars(4)) != "fmt ")
-                    throw new NotSupportedException("Неверный субчанк (ожидался fmt ).");
-
-                int fmtChunkSize = reader.ReadInt32();
-                int audioFormat = reader.ReadInt16(); // 1 для PCM
-                int channels = reader.ReadInt16();
-                sampleRate = reader.ReadInt32();
-                reader.ReadInt32(); // byteRate
-                reader.ReadInt16(); // blockAlign
-                int bitsPerSample = reader.ReadInt16();
-
-                // Пропускаем оставшиеся байты fmt, если они есть
-                if (fmtChunkSize > 16)
-                    stream.Position += (fmtChunkSize - 16);
-
-                // Ищем chunk "data" (пропуская метаданные LIST и т.д.)
-                string dataChunkHeader = new string(reader.ReadChars(4));
-                while (dataChunkHeader != "data" && stream.Position < stream.Length)
+                for (int i = 0; i < samplesRead; i++)
                 {
-                    int size = reader.ReadInt32();
-                    stream.Position += size;
-                    if (stream.Position >= stream.Length) break;
-                    dataChunkHeader = new string(reader.ReadChars(4));
+                    // Ограничиваем float в диапазон от -1.0 до 1.0
+                    float sample = readBuffer[i];
+                    if (sample > 1.0f) sample = 1.0f;
+                    else if (sample < -1.0f) sample = -1.0f;
+
+                    // Конвертируем в 16-битное целое число (PCM 16-bit)
+                    short shortSample = (short)(sample >= 0.0f ? sample * 32367.0f : sample * 32368.0f);
+
+                    // Раскладываем short на 2 байта (Little Endian)
+                    outputBytes.Add((byte)(shortSample & 0xFF));
+                    outputBytes.Add((byte)((shortSample >> 8) & 0xFF));
                 }
-
-                if (dataChunkHeader != "data")
-                    throw new Exception("Не найден аудио-дата чанк в WAV файле.");
-
-                int dataSize = reader.ReadInt32();
-                byte[] audioData = reader.ReadBytes(dataSize);
-
-                // Определяем OpenAL формат
-                format = channels switch
-                {
-                    1 => bitsPerSample == 8 ? ALFormat.Mono8 : ALFormat.Mono16,
-                    2 => bitsPerSample == 8 ? ALFormat.Stereo8 : ALFormat.Stereo16,
-                    _ => throw new NotSupportedException($"Количество каналов ({channels}) не поддерживается.")
-                };
-
-                return audioData;
             }
-        }
 
-        public static class AudioManager
+            // Добавим отладочный лог, чтобы увидеть реальный размер массива на выходе
+            Console.WriteLine($"[NVorbis Debug] Декодировано из OGG: {outputBytes.Count} байт.");
+
+            return outputBytes.ToArray();
+        }
+    }
+    public static class AudioManager
     {
         private static ALDevice _device;
         private static ALContext _context;
 
-        // Пул источников звука для SFX
-        private static readonly List<int> _sfxSources = new();
-        private static int _musicSource;
+        private static readonly List<int> _sfxSources = [];
+        private static readonly Dictionary<string, int> _loadedSfxBuffers = new(StringComparer.OrdinalIgnoreCase);
+
+        private static readonly Dictionary<string, int> _loadedMusicTracks = new(StringComparer.OrdinalIgnoreCase);
+        private static readonly HashSet<int> _activePlayingMusic = [];
 
         private static float _masterVolume = 1.0f;
         private static float _sfxVolume = 1.0f;
         private static float _musicVolume = 1.0f;
 
+        private static bool _bassInitialized = false;
+
         public static void Initialize(int maxSfxSources = 32)
         {
-            // Инициализация OpenAL контекста
-            _device = ALC.OpenDevice(null);
-            _context = ALC.CreateContext(_device, (int[])null);
-            ALC.MakeContextCurrent(_context);
-
-            // Настройка модели затухания (актуально, если будете делать 3D звук)
-            AL.DistanceModel(ALDistanceModel.InverseDistanceClamped);
-
-            // Генерируем пул источников для SFX
-            for (int i = 0; i < maxSfxSources; i++)
+            try
             {
-                int source = AL.GenSource();
-                _sfxSources.Add(source);
+                _device = ALC.OpenDevice(null);
+                _context = ALC.CreateContext(_device, null as int[]);
+                ALC.MakeContextCurrent(_context);
+
+                AL.DistanceModel(ALDistanceModel.None);
+                AL.Listener(ALListener3f.Position, 0f, 0f, 0f);
+                AL.Listener(ALListenerf.Gain, 1.0f);
+
+                _sfxSources.Clear();
+                for (int i = 0; i < maxSfxSources; i++)
+                {
+                    int source = AL.GenSource();
+                    _sfxSources.Add(source);
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[AudioManager] Ошибка OpenAL: {ex.Message}");
             }
 
-            // Источник для фоновой музыки
-            _musicSource = AL.GenSource();
-            AL.Source(_musicSource, ALSourceb.Looping, true); // Музыка обычно циклична
+            if (!_bassInitialized)
+            {
+                if (!Bass.Init(-1, 44100, DeviceInitFlags.NoSpeakerAssignment, IntPtr.Zero))
+                {
+                    Console.WriteLine($"[AudioManager] Ошибка инициализации BASS: {Bass.LastError}");
+                }
+                else
+                {
+                    _bassInitialized = true;
+                }
+            }
+
+            if (_context.Handle != IntPtr.Zero)
+            {
+                ALC.MakeContextCurrent(_context);
+            }
+        }
+
+        #region Звуковые Эффекты (Чистый OpenAL)
+
+        public static void RegisterSfx(string assetName, Stream oggStream)
+        {
+            if (_context.Handle != IntPtr.Zero) ALC.MakeContextCurrent(_context);
+
+            string key = assetName.ToUpper();
+            if (_loadedSfxBuffers.TryGetValue(key, out int oldBufferId))
+            {
+                AL.DeleteBuffer(oldBufferId);
+                _loadedSfxBuffers.Remove(key);
+            }
+
+            byte[] pcmData = OggLoader.LoadOgg(oggStream, out ALFormat format, out int sampleRate);
+
+            int bufferId = AL.GenBuffer();
+            AL.BufferData(bufferId, format, ref pcmData[0], pcmData.Length, sampleRate);
+
+            _loadedSfxBuffers[key] = bufferId;
+            Console.WriteLine($"[OpenAL SFX] Звук {key} успешно загружен в буфер {bufferId}. Размер: {pcmData.Length} байт.");
+        }
+
+        public static void RegisterSfx(string assetName, byte[] fileData)
+        {
+            using var ms = new MemoryStream(fileData);
+            RegisterSfx(assetName, ms);
+        }
+
+        public static void PlaySfx(string assetName, float pitch = 1.0f, float volume = 1.0f)
+        {
+            string key = assetName.ToUpper();
+            if (_loadedSfxBuffers.TryGetValue(key, out int bufferId))
+            {
+                PlaySfx(bufferId, pitch, volume);
+            }
         }
 
         public static void PlaySfx(int bufferId, float pitch = 1.0f, float volume = 1.0f)
         {
             if (bufferId == 0) return;
 
-            // Ищем свободный (не играющий в данный момент) источник
+            if (_context.Handle != IntPtr.Zero)
+            {
+                ALC.MakeContextCurrent(_context);
+                ALC.ProcessContext(_context);
+            }
+
+            AL.GetError(); 
+
             int sourceToUse = -1;
             foreach (var source in _sfxSources)
             {
@@ -126,62 +182,181 @@ namespace KrutolFramework.Core
                 }
             }
 
-            // Если все заняты — перебиваем первый попавшийся
-            if (sourceToUse == -1) sourceToUse = _sfxSources[0];
+            if (sourceToUse == -1 && _sfxSources.Count > 0) sourceToUse = _sfxSources[0];
+            if (sourceToUse == -1) return;
 
-            // Настраиваем параметры и запускаем
             AL.SourceStop(sourceToUse);
+            AL.Source(sourceToUse, ALSourcei.Buffer, 0);
+
+            AL.Source(sourceToUse, ALSourceb.SourceRelative, true);
+            AL.Source(sourceToUse, ALSource3f.Position, 0f, 0f, 0f); 
             AL.Source(sourceToUse, ALSourcei.Buffer, bufferId);
             AL.Source(sourceToUse, ALSourcef.Pitch, pitch);
-            AL.Source(sourceToUse, ALSourcef.Gain, volume * _sfxVolume * _masterVolume);
+
+            float finalVolume = volume * _masterVolume * _sfxVolume;
+            AL.Source(sourceToUse, ALSourcef.Gain, finalVolume);
+
             AL.SourcePlay(sourceToUse);
+
+            AL.GetSource(sourceToUse, ALGetSourcei.SourceState, out int checkState);
         }
 
-        public static void PlayMusic(int bufferId, bool loop = true)
+        public static int GetMusicHandle(string assetName)
         {
-            if (bufferId == 0) return;
+            string key = assetName.ToUpper();
+            if (_loadedMusicTracks.TryGetValue(key, out int handle))
+            {
+                return handle;
+            }
+            return 0;
+        }
+        public static int GetMusicOrder(string assetName)
+        {
+            int handle = GetMusicHandle(assetName);
 
-            AL.SourceStop(_musicSource);
-            AL.Source(_musicSource, ALSourcei.Buffer, bufferId);
-            AL.Source(_musicSource, ALSourceb.Looping, loop);
-            AL.Source(_musicSource, ALSourcef.Gain, _musicVolume * _masterVolume);
-            AL.SourcePlay(_musicSource);
+            if (handle != 0)
+            {
+                return (int)Bass.ChannelGetPosition(handle, PositionFlags.MusicOrders);
+            }
+
+            return 0;
         }
 
-        public static void StopMusic() => AL.SourceStop(_musicSource);
-        public static void PauseMusic() => AL.SourcePause(_musicSource);
-        public static void ResumeMusic() => AL.SourcePlay(_musicSource);
+        #endregion
 
+        #region Трекерная Музыка (.MO3 -> BASS)
+
+        public static void RegisterMusicTrack(string assetName, byte[] fileData)
+        {
+            string key = assetName.ToUpper();
+            if (_loadedMusicTracks.TryGetValue(key, out int oldHandle))
+            {
+                _activePlayingMusic.Remove(oldHandle);
+                Bass.MusicFree(oldHandle);
+            }
+
+            IntPtr pointer = Marshal.AllocHGlobal(fileData.Length);
+            Marshal.Copy(fileData, 0, pointer, fileData.Length);
+
+            int musicHandle = Bass.MusicLoad(pointer, 0, fileData.Length, BassFlags.MusicRamp | BassFlags.Loop, 0);
+            if (musicHandle == 0)
+            {
+                Marshal.FreeHGlobal(pointer);
+                throw new Exception($"[AudioManager] Ошибка .mo3 '{assetName}': {Bass.LastError}");
+            }
+
+            _loadedMusicTracks[key] = musicHandle;
+            Bass.ChannelSetAttribute(musicHandle, ChannelAttribute.Volume, 0.15f);
+            Bass.ChannelSetAttribute(musicHandle, (ChannelAttribute)2, 15f);
+        }
+
+        public static void SetTrackVolume(string assetName, float volume)
+        {
+            string key = assetName.ToUpper();
+            if (_loadedMusicTracks.TryGetValue(key, out int handle))
+            {
+                float finalVol = Math.Clamp(volume, 0f, 1f) * _musicVolume * _masterVolume * 0.1f;
+                float globalTrackerVolume = finalVol * 100;
+                Bass.ChannelSetAttribute(handle, ChannelAttribute.MusicVolumeGlobal, globalTrackerVolume);
+                Bass.ChannelSetAttribute(handle, ChannelAttribute.MusicVolumeChannel, globalTrackerVolume);
+            }
+        }
+
+        private static void UpdateChannelVolume(int handle)
+        {
+            float finalVol = _musicVolume * _masterVolume * 0.1f;
+            float globalTrackerVolume = finalVol * 100f;
+            Bass.ChannelSetAttribute(handle, ChannelAttribute.MusicVolumeGlobal, globalTrackerVolume);
+            Bass.ChannelSetAttribute(handle, ChannelAttribute.MusicVolumeChannel, globalTrackerVolume);
+        }
+
+        public static void SetMusicChannelVolume(string assetName, int trackIndex, int volume)
+        {
+            string key = assetName.ToUpper();
+            if (_loadedMusicTracks.TryGetValue(key, out int hMusic))
+            {
+                int clampedVolume = Math.Clamp(volume, 0, 100);
+                Bass.ChannelSetAttribute(hMusic, ChannelAttribute.MusicVolumeChannel + trackIndex, clampedVolume);
+            }
+        }
+
+        public static void PlayMusicTrackWithOffset(string assetName, int rawOffset, bool restart = false)
+        {
+            string key = assetName.ToUpper();
+            if (_loadedMusicTracks.TryGetValue(key, out int handle))
+            {
+                if (restart)
+                {
+                    Bass.ChannelStop(handle);
+                    _activePlayingMusic.Remove(handle);
+                }
+
+                _activePlayingMusic.Add(handle);
+                UpdateChannelVolume(handle);
+
+                int orderIndex = rawOffset & 0xFFFF;
+                Bass.ChannelSetPosition(handle, (long)orderIndex, PositionFlags.MusicOrders);
+                Bass.ChannelPlay(handle, false);
+            }
+        }
+
+        public static void PlayMusicTrack(string assetName, bool restart = false)
+        {
+            string key = assetName.ToUpper();
+            if (!_loadedMusicTracks.TryGetValue(key, out int handle)) return;
+
+            if (restart)
+            {
+                Bass.ChannelStop(handle);
+                _activePlayingMusic.Remove(handle);
+            }
+            else if (_activePlayingMusic.Contains(handle) && Bass.ChannelIsActive(handle) == PlaybackState.Playing)
+            {
+                return;
+            }
+
+            _activePlayingMusic.Add(handle);
+            UpdateChannelVolume(handle);
+            Bass.ChannelPlay(handle, restart);
+        }
+
+        public static void StopMusicTrack(string assetName)
+        {
+            string key = assetName.ToUpper();
+            if (_loadedMusicTracks.TryGetValue(key, out int handle))
+            {
+                Bass.ChannelStop(handle);
+                _activePlayingMusic.Remove(handle);
+            }
+        }
+        public static void StopAllMusic()
+        {
+            foreach (var handle in _activePlayingMusic) Bass.ChannelStop(handle);
+            _activePlayingMusic.Clear();
+        }
         public static void SetVolume(float master, float sfx, float music)
         {
             _masterVolume = Math.Clamp(master, 0f, 1f);
             _sfxVolume = Math.Clamp(sfx, 0f, 1f);
             _musicVolume = Math.Clamp(music, 0f, 1f);
-
-            // Накатываем громкость на играющую музыку мгновенно
-            AL.Source(_musicSource, ALSourcef.Gain, _musicVolume * _masterVolume);
+            foreach (var handle in _activePlayingMusic) UpdateChannelVolume(handle);
         }
-
+        #endregion
         public static void Shutdown()
         {
-            StopMusic();
-            AL.DeleteSource(_musicSource);
-
-            foreach (var source in _sfxSources)
-            {
-                AL.DeleteSource(source);
-            }
-            _sfxSources.Clear();
-
-            // Освобождаем контекст
+            StopAllMusic();
+            foreach (var handle in _loadedMusicTracks.Values) Bass.MusicFree(handle);
+            _loadedMusicTracks.Clear();
             if (_context.Handle != IntPtr.Zero)
             {
                 ALC.MakeContextCurrent(ALContext.Null);
                 ALC.DestroyContext(_context);
             }
-            if (_device.Handle != IntPtr.Zero)
+            if (_device.Handle != IntPtr.Zero) ALC.CloseDevice(_device);
+            if (_bassInitialized)
             {
-                ALC.CloseDevice(_device);
+                Bass.Free();
+                _bassInitialized = false;
             }
         }
     }

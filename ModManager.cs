@@ -6,11 +6,11 @@ namespace KrutolFramework.Core
 {
     public class ModManifest
     {
-        public string Id { get; set; }
-        public string Name { get; set; }
-        public string Version { get; set; }
-        public string Author { get; set; }
-        public string AssemblyName { get; set; }
+        public string Id { get; set; } = "";
+        public string Name { get; set; } = "";
+        public string Version { get; set; } = "";
+        public string Author { get; set; } = "";
+        public string AssemblyName { get; set; } = "";
     }
 
         public static class ModManager
@@ -65,12 +65,12 @@ namespace KrutolFramework.Core
                     foreach (Type type in asm.GetTypes())
                     {
                         // ИСПРАВЛЕНО: Теперь ищем Init(GameWindow window) вместо Init() без параметров
-                        MethodInfo initMethod = type.GetMethod("Init", BindingFlags.Public | BindingFlags.Static, null, new Type[] { typeof(GameWindow) }, null);
+                        MethodInfo initMethod = type.GetMethod("Init", BindingFlags.Public | BindingFlags.Static, null, [typeof(GameWindow)], null);
 
                         if (initMethod != null)
                         {
                             // Передаем экземпляр игры прямо в мод!
-                            initMethod.Invoke(null, new object[] { gameWindow });
+                            initMethod.Invoke(null, [gameWindow]);
                             initFound = true;
                             Console.WriteLine($"[Mods] Мод '{manifest.Name}' v{manifest.Version} успешно загружен.");
                             LoadedMods.Add(manifest);

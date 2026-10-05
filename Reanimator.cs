@@ -31,13 +31,13 @@ namespace KrutolFramework.Core
     public class ReanimTrack
     {
         public string Name { get; set; } = "";
-        public ReanimTransform[] Transforms { get; set; } = Array.Empty<ReanimTransform>();
+        public ReanimTransform[] Transforms { get; set; } = [];
     }
 
     public class ReanimDefinition
     {
         public float FPS { get; set; } = 12f;
-        public List<ReanimTrack> Tracks { get; set; } = new();
+        public List<ReanimTrack> Tracks { get; set; } = [];
         public int FrameCount => Tracks.Count > 0 ? Tracks[0].Transforms.Length : 0;
     }
 
@@ -77,7 +77,7 @@ namespace KrutolFramework.Core
         private readonly Dictionary<string, string> _imageOverrides = new(StringComparer.OrdinalIgnoreCase);
         private float _flashTimer = 0f;
         private const float FLASH_DURATION = 0.15f; // Длительность мигания при уроне
-        private TextureRegion[] _cachedTrackRegions;
+        private readonly TextureRegion[] _cachedTrackRegions;
 
 
         public Reanimation(ReanimDefinition definition, AssetGroup group)
@@ -158,7 +158,6 @@ namespace KrutolFramework.Core
                     {
                         var t = track.Transforms[i];
 
-                        // В движке PopCap кадр считается валидным, если f >= 0
                         if (t.Frame != null && t.Frame.Value >= 0f)
                         {
                             if (startFrame == -1)
@@ -286,17 +285,13 @@ namespace KrutolFramework.Core
             {
                 float prevTransX = 0f; float prevTransY = 0f;
                 float prevSkewX = 0f; float prevSkewY = 0f;
-                float scaleX_Global = 1f; float scaleY_Global = 1f; // Внутреннее имя изменено во избежание конфликтов
+                float scaleX_Global = 1f; float scaleY_Global = 1f; 
 
-                // По умолчанию альфа всегда равна 1.0f (видимый)
                 float prevAlpha = 1f;
 
-                // Стартуем с 0f (кадр активен), пока явный маркер -1 в XML не скроет трек
                 float prevFrame = 0f;
                 string prevImg = "";
 
-                // ВАЖНО: Убираем первый проход, который искал картинку "из будущего"!
-                // PopCap наследует картинки строго по ходу таймлайна.
 
                 for (int i = 0; i < track.Transforms.Length; i++)
                 {
@@ -575,10 +570,8 @@ namespace KrutolFramework.Core
         // Старый метод для обратной совместимости (чтение с диска)
         public static ReanimDefinition ParseXml(string filePath)
         {
-            using (var stream = File.OpenRead(filePath))
-            {
-                return ParseXml(stream);
-            }
+            using var stream = File.OpenRead(filePath);
+            return ParseXml(stream);
         }
 
         // НОВЫЙ МЕТОД: Чтение XML-анимации PopCap напрямую из потока архива
@@ -637,7 +630,7 @@ namespace KrutolFramework.Core
 
                             transformsList.Add(t);
                         }
-                        track.Transforms = transformsList.ToArray();
+                        track.Transforms = [.. transformsList];
                     }
 
                     def.Tracks.Add(track);

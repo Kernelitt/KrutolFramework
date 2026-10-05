@@ -23,7 +23,7 @@ namespace KrutolFramework.Core
         /// <summary>
         /// Инициализация менеджера ввода. Вызывается один раз при старте игры.
         /// </summary>
-        public static readonly Vector2 VirtualResolution = new Vector2(1600f, 900f);
+        public static readonly Vector2 VirtualResolution = new(1600f, 900f);
         public static Vector2 VirtualMousePosition
         {
             get
@@ -52,7 +52,7 @@ namespace KrutolFramework.Core
             }
         }
 
-        private static readonly List<char> _frameTextBuffer = new List<char>();
+        private static readonly List<char> _frameTextBuffer = [];
 
         /// <summary>
         /// Возвращает список символов, введённых на ЭТОМ кадре
@@ -61,7 +61,7 @@ namespace KrutolFramework.Core
         {
             lock (_frameTextBuffer)
             {
-                return new List<char>(_frameTextBuffer);
+                return [.. _frameTextBuffer];
             }
         }
 
@@ -82,7 +82,7 @@ namespace KrutolFramework.Core
             _window = window;
             _mouseState = window.MouseState;
             _keyboardState = window.KeyboardState;
-            _window.TextInput += (TextInputEventArgs e) =>
+            _window.TextInput += static e =>
             {
                 if (!string.IsNullOrEmpty(e.AsString))
                 {

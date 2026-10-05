@@ -621,7 +621,6 @@ namespace KrutolFramework.Core
 
                         int finalFrameIndex = p.SelectedFrame + _def.ImageCol;
 
-                        // Фикс: явно инициализируем изолированный регион для батчера
                         TextureRegion frameRegion = new TextureRegion
                         {
                             AtlasTextureHandle = region.AtlasTextureHandle,
@@ -637,13 +636,11 @@ namespace KrutolFramework.Core
                         frameRegion.U1 = region.U1 + (finalFrameIndex * frameUWidth);
                         frameRegion.U2 = frameRegion.U1 + frameUWidth;
 
-                        // 4. ИНТЕГРАЦИЯ CLIPTOP, CLIPBOTTOM, CLIPLEFT, CLIPRIGHT
                         float clipTop = _def.ClipTop.Evaluate(pProgress, 0f);
                         float clipBottom = _def.ClipBottom.Evaluate(pProgress, 0f);
                         float clipLeft = _def.ClipLeft.Evaluate(pProgress, 0f);
                         float clipRight = _def.ClipRight.Evaluate(pProgress, 0f);
 
-                        // Если параметры обрезки выставлены (больше 0), сжимаем текстурный регион UV
                         if (clipLeft > 0f || clipRight > 0f || clipTop > 0f || clipBottom > 0f)
                         {
                             float uLength = frameRegion.U2 - frameRegion.U1;
@@ -654,15 +651,12 @@ namespace KrutolFramework.Core
                             frameRegion.V1 += vLength * clipTop;
                             frameRegion.V2 -= vLength * clipBottom;
 
-                            // Уменьшаем физический размер спрайта для батчера пропорционально обрезке
                             frameRegion.Width = (int)(celWidth * (1f - (clipLeft + clipRight)));
-                            // Высота кадра сжимается аналогично, если ваш батчер это поддерживает
                         }
 
                         float stretch = _def.ParticleStretch.Evaluate(pProgress, p.ScaleRandom);
 
-                        // Масштаб по X остается стандартным, а по оси Y умножается на коэффициент Stretch
-                        Vector2 pScale = new Vector2(scale, scale * stretch);
+                        Vector2 pScale = new(scale, scale * stretch);
 
                         batch.Draw(frameRegion, systemPos + _systemFieldOffset + p.Position * systemScale, pScale, p.Rotation, pColor, Anchor.Center);
                     }
@@ -672,7 +666,6 @@ namespace KrutolFramework.Core
 
             if (_def.Additive)
             {
-                // Возвращаем обычный Alpha-блендинг фреймворка
                 GL.BlendFunc(BlendingFactor.SrcAlpha, BlendingFactor.OneMinusSrcAlpha);
             }
         }

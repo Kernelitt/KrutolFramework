@@ -19,7 +19,7 @@ namespace KrutolFramework.Core
             GL.DebugMessageCallback(DebugCallback, IntPtr.Zero);
 
             // Базовые настройки рендеринга
-            GL.ClearColor(0.1f, 0.12f, 0.16f, 1.0f);
+            GL.ClearColor(0.0f, 0.0f, 0.0f, 1.0f);
             GL.Disable(EnableCap.DepthTest);          
 
             Console.WriteLine($"[Framework] OpenGL Инициализирован.");
@@ -35,8 +35,6 @@ namespace KrutolFramework.Core
         protected override void OnRenderFrame(FrameEventArgs args)
         {
             base.OnRenderFrame(args);
-
-            // Очищаем буферы цвета и глубины
             GL.Clear(ClearBufferMask.ColorBufferBit | ClearBufferMask.DepthBufferBit);
         }
 

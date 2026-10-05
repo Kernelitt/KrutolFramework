@@ -12,10 +12,8 @@ namespace KrutolFramework.Core
         // Старый метод для обратной совместимости (чтение с диска)
         public static ReanimDefinition ParseCompiled(string filePath)
         {
-            using (FileStream fs = File.OpenRead(filePath))
-            {
-                return ParseCompiled(fs);
-            }
+            using FileStream fs = File.OpenRead(filePath);
+            return ParseCompiled(fs);
         }
 
         // НОВЫЙ МЕТОД: Чтение скомпилированной анимации прямо из потока архива
@@ -23,7 +21,7 @@ namespace KrutolFramework.Core
         {
             // Проверяем сжатие Zlib
             byte[] magicBytes = new byte[4];
-            fs.Read(magicBytes, 0, 4);
+            fs.ReadExactly(magicBytes, 0, 4);
             int magic = BitConverter.ToInt32(magicBytes, 0);
 
             // Сбрасываем позицию назад, так как прочитали 4 байта
@@ -35,7 +33,7 @@ namespace KrutolFramework.Core
             {
                 // Если поток из Zip-архива не поддерживает Seek (или обратный сдвиг),
                 // мы конкатенируем эти 4 байта или создаем MemoryStream, чтобы не сломать парсер.
-                MemoryStream msFull = new MemoryStream();
+                MemoryStream msFull = new();
                 msFull.Write(magicBytes, 0, 4);
                 fs.CopyTo(msFull);
                 msFull.Position = 0;
@@ -45,30 +43,22 @@ namespace KrutolFramework.Core
             if (magic == MagicZlib)
             {
                 // Файл сжат ZLib
-                using (BinaryReader br = new BinaryReader(fs, Encoding.UTF8, leaveOpen: true))
-                {
-                    br.ReadInt32(); // Пропускаем magic
-                    int decompressedSize = br.ReadInt32(); // Размер распакованных данных
+                using BinaryReader br = new(fs, Encoding.UTF8, leaveOpen: true);
+                br.ReadInt32(); // Пропускаем magic
+                int decompressedSize = br.ReadInt32(); // Размер распакованных данных
 
-                    using (ZLibStream zlib = new ZLibStream(fs, CompressionMode.Decompress, leaveOpen: true))
-                    using (MemoryStream ms = new MemoryStream(decompressedSize))
-                    {
-                        zlib.CopyTo(ms);
-                        ms.Position = 0;
-                        using (BinaryReader decompressedReader = new BinaryReader(ms, Encoding.UTF8))
-                        {
-                            return ReadBinaryData(decompressedReader);
-                        }
-                    }
-                }
+                using ZLibStream zlib = new(fs, CompressionMode.Decompress, leaveOpen: true);
+                using MemoryStream ms = new(decompressedSize);
+                zlib.CopyTo(ms);
+                ms.Position = 0;
+                using BinaryReader decompressedReader = new(ms, Encoding.UTF8);
+                return ReadBinaryData(decompressedReader);
             }
             else
             {
                 // Файл не сжат
-                using (BinaryReader br = new BinaryReader(fs, Encoding.UTF8, leaveOpen: true))
-                {
-                    return ReadBinaryData(br);
-                }
+                using BinaryReader br = new(fs, Encoding.UTF8, leaveOpen: true);
+                return ReadBinaryData(br);
             }
         }
 
@@ -93,8 +83,10 @@ namespace KrutolFramework.Core
                 br.ReadInt32(); // Пропускаем 0
                 int transformCount = br.ReadInt32();
 
-                var track = new ReanimTrack();
-                track.Transforms = new ReanimTransform[transformCount];
+                var track = new ReanimTrack
+                {
+                    Transforms = new ReanimTransform[transformCount]
+                };
 
                 tracksTempData[i] = (transformCount, track);
             }
